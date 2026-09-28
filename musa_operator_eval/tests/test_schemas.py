@@ -45,7 +45,14 @@ def task_document(tier, **overrides):
         "id": "example_v0",
         "name": "Example operator",
         "family": "sdpa_forward",
-        "source": {"project": "example-source", "record": "sources/example.json"},
+        "source": {
+            "project": "example-source",
+            "record": "sources/example.json",
+            "revision": "0123456789abcdef0123456789abcdef01234567",
+            "license": "MIT",
+            "snapshot_location": "musa_operator_eval/tasks/example_v0/problem.py",
+            "snapshot_revision": "fedcba9876543210fedcba9876543210fedcba98",
+        },
         "target_environment": {
             "snapshot_id": "musa-5f9d7b9dd1233a68",
             "record": "environments/musa-5f9d7b9dd1233a68.public.json",
@@ -135,6 +142,21 @@ def manifest_document(tier, visibility, cases, **overrides):
         "case_generation": {"tool": "musa_operator_eval/tools/generate_cases.py", "deterministic": True},
         "cases": cases,
     }
+    if visibility == "private":
+        document["generalization_probe"] = {
+            "generator": "musa_operator_eval/evaluator/generalization_probe.py",
+            "seed_source": "runtime_entropy",
+            "count": 1,
+            "dtype_choices": ["float16"],
+            "shape_space": {
+                "B": {"choices": [1, 2]},
+                "H": {"choices": [4, 8]},
+                "S": {"minimum": 96, "maximum": 160, "step": 16},
+                "D": {"choices": [32, 64]},
+            },
+            "template": {"distribution": "normal"},
+            "expected_path_rules": [{"path": "library_composition"}],
+        }
     document.update(overrides)
     return document
 
@@ -183,9 +205,9 @@ class SchemaDocumentTests(unittest.TestCase):
     def schema_paths(self):
         return sorted((ROOT / "schemas").glob("*.schema.json"))
 
-    def test_there_are_six_schemas_and_the_validator_knows_all_of_them(self):
-        self.assertEqual(len(self.schema_paths()), 6)
-        self.assertEqual(len(validator.SCHEMAS), 6)
+    def test_there_are_seven_schemas_and_the_validator_knows_all_of_them(self):
+        self.assertEqual(len(self.schema_paths()), 7)
+        self.assertEqual(len(validator.SCHEMAS), 7)
         self.assertEqual(
             {path.name for path in self.schema_paths()},
             set(validator.SCHEMAS.values()),
@@ -283,20 +305,28 @@ class TierRuleTests(unittest.TestCase):
         errors = validator.validate_instance_stdlib(document, "task_contract")
         self.assertTrue(any("admission" in error for error in errors), errors)
 
-    def test_one_gap_category_with_a_coverage_note_is_accepted(self):
+    def test_one_gap_category_is_valid_only_as_an_explicitly_blocked_candidate(self):
         document = task_document("B_library")
         document["library_policy"]["required_gap_reasons"] = ["unsupported_shape"]
         document["admission"] = {
-            "status": "pending_device_measurement",
-            "reason": "measured on the device",
+            "status": "blocked_gap_coverage",
+            "reason": "the task has only one measured category and cannot enter scoring",
             "gap_reason_coverage": {
-                "state": "open",
+                "state": "blocked",
                 "reachable": ["unsupported_shape"],
                 "unreachable": ["semantic_mismatch", "layout_mismatch", "multi_operator_required"],
                 "basis": "the scale is fixed and there is no window, so no other category is reachable",
             },
         }
         self.assertEqual(validator.validate_instance_stdlib(document, "task_contract"), [])
+
+    def test_one_gap_category_cannot_be_admitted(self):
+        document = task_document("B_library")
+        document["library_policy"]["required_gap_reasons"] = ["unsupported_shape"]
+        document["admission"] = {"status": "measured", "decision": "admit"}
+        errors = validator.validate_instance_stdlib(document, "task_contract")
+        self.assertTrue(any("at least 2" in error or "blocked_gap_coverage" in error
+                            for error in errors), errors)
 
 
 class ToleranceAuthorityTests(unittest.TestCase):
@@ -374,6 +404,33 @@ class CaseManifestRuleTests(unittest.TestCase):
         document = manifest_document("B_library", "public", [case(expected_path="library_composition")])
         errors = validator.validate_instance_stdlib(document, "case_manifest")
         self.assertTrue(any("fused_library" in error for error in errors), errors)
+
+    def test_a_public_manifest_may_not_publish_a_runtime_probe_policy(self):
+        document = manifest_document("A_kernel", "public", [case()])
+        document["generalization_probe"] = {
+            "generator": "musa_operator_eval/evaluator/generalization_probe.py",
+            "seed_source": "runtime_entropy", "count": 1,
+            "dtype_choices": ["float16"], "shape_space": {"S": {"choices": [96]}},
+            "template": {},
+        }
+        errors = validator.validate_instance_stdlib(document, "case_manifest")
+        self.assertTrue(any("must not match" in error for error in errors), errors)
+
+    def test_a_private_manifest_must_record_a_runtime_probe_policy(self):
+        document = manifest_document("B_library", "private", [
+            gap("hidden_gap_001"), gap("hidden_gap_002"), gap("hidden_gap_003", "semantic_mismatch")
+        ])
+        del document["generalization_probe"]
+        errors = validator.validate_instance_stdlib(document, "case_manifest")
+        self.assertTrue(any("generalization_probe" in error for error in errors), errors)
+
+    def test_a_fixed_generalization_case_is_outside_the_manifest_vocabulary(self):
+        document = manifest_document("B_library", "private", [
+            gap("hidden_gap_001"), gap("hidden_gap_002"), gap("hidden_gap_003", "semantic_mismatch")
+        ])
+        document["cases"][0]["tag"] = "generalization"
+        errors = validator.validate_instance_stdlib(document, "case_manifest")
+        self.assertTrue(any("generalization" in error for error in errors), errors)
 
     def test_a_private_b_manifest_meeting_the_floor_passes(self):
         cases = [
@@ -529,6 +586,12 @@ class ReportModeTests(unittest.TestCase):
         has to validate, because none of that changes what the report means."""
         document = self.full_report()
         document["stages"] = ["case_generation", "golden", "correctness"]
+        document["evaluation_stages"] = [
+            {"stage": "correctness", "status": "failed", "cases": 1, "failed": 1},
+            {"stage": "boundary", "status": "not_present", "cases": 0},
+            {"stage": "stability", "status": "not_present", "cases": 0},
+            {"stage": "performance", "status": "skipped", "cases": 1},
+        ]
         document["golden"] = {"generated_root": "runs/generated", "results": [], "fatal": False, "exit_code": 0}
         document["cases"] = [
             {
@@ -550,11 +613,23 @@ class ReportModeTests(unittest.TestCase):
         ]
         self.assertEqual(validator.validate_instance_stdlib(document, "evaluation_report"), [])
 
+    def test_an_unknown_evaluation_substage_is_rejected(self):
+        document = self.full_report()
+        document["evaluation_stages"] = [
+            {"stage": "benchmark", "status": "passed", "cases": 1}
+        ]
+        errors = validator.validate_instance_stdlib(document, "evaluation_report")
+        self.assertTrue(any("benchmark" in error for error in errors), errors)
+
 
 class BaselineRuleTests(unittest.TestCase):
     """Guide §4.4: the B tier is scored against the expert dispatch, not the reference."""
 
     def baseline(self, tier):
+        common = ["upstream_musa", "mudnn_fused", "torch_musa_sdpa", "torch_musa_eager"]
+        implementations = common + (
+            ["naive_library_composition", "expert_dispatch"] if tier == "B_library" else []
+        )
         return {
             "schema_version": "1.0.0",
             "task_id": "example_b_v0",
@@ -562,12 +637,20 @@ class BaselineRuleTests(unittest.TestCase):
             "environment_snapshot": "musa-5f9d7b9dd1233a68",
             "measurement_protocol": {"timer": "cuda_event", "warmup": 3, "measurements": 100,
                                   "discard_first": 1, "statistic": "mean", "cache": "cold", "rounds": 1},
-            "implementations": [
-                "reference_model", "upstream_musa", "mudnn_fused",
-                "naive_library_composition", "expert_dispatch",
+            "implementations": implementations,
+            "results": [
+                {"case_id": "hidden_gap_001", "implementation": role, "status": "pass", "latency_ms": 0.1}
+                for role in implementations
             ],
-            "results": [{"case_id": "hidden_gap_001", "implementation": "expert_dispatch", "status": "pass", "latency_ms": 0.1}],
-            "scoring": {"speedup_denominator": "expert_dispatch", "correctness_gate": "all_hidden_cases"},
+            "readiness": {
+                "status": "complete", "required_roles": implementations, "case_count": 1,
+                "missing_roles": [], "missing_rows": [], "duplicate_rows": [],
+                "unavailable_rows": [], "nonpassing_rows": [], "problems": [],
+            },
+            "scoring": {
+                "speedup_denominator": "expert_dispatch" if tier == "B_library" else "upstream_musa",
+                "correctness_gate": "all_hidden_cases",
+            },
         }
 
     def test_a_b_baseline_on_the_expert_dispatch_passes(self):
@@ -575,7 +658,7 @@ class BaselineRuleTests(unittest.TestCase):
 
     def test_a_b_baseline_missing_the_expert_dispatch_is_rejected(self):
         document = self.baseline("B_library")
-        document["implementations"] = ["reference_model", "upstream_musa", "mudnn_fused"]
+        document["implementations"].remove("expert_dispatch")
         errors = validator.validate_instance_stdlib(document, "baseline")
         self.assertTrue(any("must not match" in error for error in errors), errors)
 
@@ -590,6 +673,47 @@ class BaselineRuleTests(unittest.TestCase):
         document["results"].append({"case_id": "hidden_gap_001", "implementation": "mystery", "status": "pass"})
         errors = validator.validate_instance(document, "baseline", engine="stdlib")
         self.assertTrue(any("mystery" in error for error in errors), errors)
+
+    def test_readiness_is_required(self):
+        document = self.baseline("A_kernel")
+        document.pop("readiness")
+        errors = validator.validate_instance(document, "baseline", engine="stdlib")
+        self.assertTrue(any("readiness" in error for error in errors), errors)
+
+    def test_an_a_baseline_needs_every_common_role(self):
+        document = self.baseline("A_kernel")
+        document["implementations"].remove("torch_musa_eager")
+        errors = validator.validate_instance_stdlib(document, "baseline")
+        self.assertTrue(any("must not match" in error for error in errors), errors)
+
+    def test_a_b_baseline_needs_the_eager_cross_check_too(self):
+        document = self.baseline("B_library")
+        document["implementations"].remove("torch_musa_eager")
+        errors = validator.validate_instance_stdlib(document, "baseline")
+        self.assertTrue(any("must not match" in error for error in errors), errors)
+
+    def test_an_unavailable_row_needs_a_nonempty_reason(self):
+        document = self.baseline("A_kernel")
+        document["results"][0].update(status="unavailable", reason="")
+        errors = validator.validate_instance_stdlib(document, "baseline")
+        self.assertTrue(any("minLength" in error for error in errors), errors)
+
+    def test_a_stale_complete_readiness_record_is_rejected(self):
+        document = self.baseline("A_kernel")
+        document["results"].pop()
+        errors = validator.validate_instance(document, "baseline", engine="stdlib")
+        self.assertTrue(any("readiness." in error and "derived" in error for error in errors), errors)
+
+    def test_both_baseline_templates_are_schema_valid_incomplete_records(self):
+        paths = sorted((ROOT / "templates").glob("baseline.*.template.json"))
+        self.assertEqual(len(paths), 2)
+        for path in paths:
+            with self.subTest(template=path.name):
+                document = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(document["readiness"]["status"], "incomplete")
+                self.assertEqual(
+                    validator.validate_instance(document, "baseline", engine="stdlib"), []
+                )
 
 
 class SemanticsContractTests(unittest.TestCase):

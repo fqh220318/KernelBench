@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -47,6 +48,10 @@ def load_probe():
 
 def load_collector():
     return load_tool("collect_environment.py", "collect_environment")
+
+
+def load_generalization_probe():
+    return load_tool("generalization_probe.py", "generalization_probe_test")
 
 
 class EnvironmentToolTests(unittest.TestCase):
@@ -206,7 +211,7 @@ class ProbeStatusTests(unittest.TestCase):
         self.assertIn("not on PATH", result["reason"])
 
     def test_failing_command_records_output_and_reason(self):
-        result = load_collector().run(["false"])
+        result = load_collector().run([sys.executable, "-c", "raise SystemExit(3)"])
         self.assertEqual(result["status"], "error")
         self.assertIn("exit code", result["reason"])
 
@@ -220,9 +225,9 @@ class PrivateManifestGoldenPathTests(unittest.TestCase):
     produces (`<case_id>/golden/tensors.json`), so every path pointed at nothing.
     """
 
-    # A hidden-case plan in the shape `make_private_manifest.py` now reads: the
-    # maintainer supplies every case, including the performance and generalisation
-    # ones, and the tool refuses a plan that is missing a role.
+    # A hidden-case plan in the shape `make_private_manifest.py` now reads.  The
+    # exact generalisation case is intentionally absent: only a sampling policy
+    # is retained, and the evaluator realizes the case after a run starts.
     EVIDENCE = {"cases": [
         {"case_id": "hidden_gap_001", "role": "gap", "tag": "boundary", "seed": 91, "dtype": "float16",
          "shape": {"B": 1, "H_q": 2, "H_kv": 2, "S_q": 8, "S_kv": 8, "D": 16},
@@ -247,11 +252,30 @@ class PrivateManifestGoldenPathTests(unittest.TestCase):
          "attributes": {"scale": 0.25, "causal": False, "window_left": -1, "window_right": -1},
          "distribution": "normal", "expected_path": "fused_library",
          },
-        {"case_id": "hidden_probe_001", "role": "probe", "tag": "generalization", "seed": 95, "dtype": "float16",
-         "shape": {"B": 1, "H_q": 2, "H_kv": 2, "S_q": 128, "S_kv": 128, "D": 16},
-         "attributes": {"scale": 0.25, "causal": False, "window_left": -1, "window_right": -1},
-         "distribution": "normal", "expected_path": "fused_library"},
     ]}
+
+    PROBE_POLICY = {
+        "generator": "musa_operator_eval/evaluator/generalization_probe.py",
+        "seed_source": "runtime_entropy",
+        "count": 1,
+        "dtype_choices": ["float16", "bfloat16"],
+        "shape_space": {
+            "B": {"choices": [1, 2]},
+            "H_q": {"choices": [2, 4]},
+            "H_kv": {"choices": [2]},
+            "S_q": {"minimum": 96, "maximum": 160, "step": 16},
+            "S_kv": {"minimum": 96, "maximum": 160, "step": 16},
+            "D": {"choices": [16, 32, 64]},
+        },
+        "template": {
+            "attributes": {"scale": 0.25, "causal": False, "window_left": -1, "window_right": -1},
+            "distribution": "normal",
+        },
+        "expected_path_rules": [
+            {"when": {"D": {"maximum": 32}}, "path": "fused_library"},
+            {"path": "library_composition"},
+        ],
+    }
 
     # The task a plan belongs to. Only the fields the tool checks are needed: the
     # contract's required reasons, its id and tier, and -- through the caller's
@@ -266,7 +290,9 @@ class PrivateManifestGoldenPathTests(unittest.TestCase):
     }
 
     def manifest(self):
-        return load_manifest_tool().build_manifest(self.EVIDENCE["cases"], dict(self.TASK))
+        return load_manifest_tool().build_manifest(
+            self.EVIDENCE["cases"], dict(self.TASK), self.PROBE_POLICY
+        )
 
     def test_every_case_names_its_golden_under_its_own_case_directory(self):
         manifest = self.manifest()
@@ -298,44 +324,34 @@ class PrivateManifestGoldenPathTests(unittest.TestCase):
     def test_the_visibility_is_private(self):
         self.assertEqual(self.manifest()["visibility"], "private")
 
-    def problems(self, plan, task=None):
+    def problems(self, plan, task=None, policy=None):
         """The refusals a plan earns, as a list rather than as an exception.
 
         `check_plan` returns every problem at once so a maintainer sees all of
         them, which is why the tests assert on the list rather than on a raise.
         """
-        return load_manifest_tool().check_plan(plan, dict(task or self.TASK))
+        return load_manifest_tool().check_plan(
+            plan, dict(task or self.TASK), self.PROBE_POLICY if policy is None else policy
+        )
 
     def test_too_few_gaps_is_refused(self):
         thin = [case for case in self.EVIDENCE["cases"]
                 if case["role"] != "gap" or case["case_id"] == "hidden_gap_001"]
         self.assertTrue(any("at least 3" in problem for problem in self.problems(thin)))
 
-    def test_one_reason_category_is_refused_unless_the_contract_records_it(self):
-        """§4.3 asks for two categories, and most entry-scoped tasks reach one.
-
-        A task whose reference fixes its scale, has no window and is causal has
-        exactly one library boundary to find, so the shortfall is a property of the
-        task. It is allowed only when the contract says so: a silent single-category
-        set is indistinguishable from an unfinished one.
-        """
+    def test_one_reason_category_is_refused_even_when_the_contract_records_the_blocker(self):
+        """A blocker record explains a shortfall; it does not waive the floor."""
         one_category = [
             {**case, "library_gap": {**case["library_gap"], "reason": "unsupported_shape"}}
             if case["role"] == "gap" else case
             for case in self.EVIDENCE["cases"]
         ]
-        silent = dict(self.TASK)
-        silent["admission"] = {"gap_reason_coverage": {"state": "covered"}}
-        self.assertTrue(any("reason category" in problem for problem in self.problems(one_category, silent)))
-
         recorded = dict(self.TASK)
-        recorded["admission"] = {"gap_reason_coverage": {"state": "open"}}
-        # The contract has to agree: a task that reaches one category must require
-        # one, or the required-reason check fires on the same plan for a second and
-        # unrelated reason.
+        recorded["admission"] = {"gap_reason_coverage": {"state": "blocked"}}
         recorded["library_policy"] = {**self.TASK["library_policy"],
                                       "required_gap_reasons": ["unsupported_shape"]}
-        self.assertEqual(self.problems(one_category, recorded), [])
+        self.assertTrue(any("requires at least 2" in problem
+                            for problem in self.problems(one_category, recorded)))
 
     def test_a_required_reason_that_no_gap_produces_is_refused(self):
         """A reason the contract requires and the set never produces is a broken promise."""
@@ -372,9 +388,22 @@ class PrivateManifestGoldenPathTests(unittest.TestCase):
         no_perf = [case for case in self.EVIDENCE["cases"] if case["role"] != "perf"]
         self.assertTrue(any("no perf case" in problem for problem in self.problems(no_perf)))
 
-    def test_a_plan_without_a_generalisation_probe_is_refused(self):
-        no_probe = [case for case in self.EVIDENCE["cases"] if case["role"] != "probe"]
-        self.assertTrue(any("no probe case" in problem for problem in self.problems(no_probe)))
+    def test_a_listed_generalisation_probe_is_refused(self):
+        listed = self.EVIDENCE["cases"] + [{
+            "case_id": "hidden_probe_001", "role": "probe", "tag": "generalization",
+            "seed": 95, "dtype": "float16",
+            "shape": {"B": 1, "H_q": 2, "H_kv": 2, "S_q": 128, "S_kv": 128, "D": 16},
+        }]
+        self.assertTrue(any("must not be a listed case" in problem for problem in self.problems(listed)))
+
+    def test_a_plan_without_a_runtime_probe_policy_is_refused(self):
+        self.assertTrue(any("generalization_probe must be an object" in problem
+                            for problem in self.problems(self.EVIDENCE["cases"], policy=False)))
+
+    def test_manifest_records_only_the_runtime_probe_policy(self):
+        manifest = self.manifest()
+        self.assertEqual(manifest["generalization_probe"], self.PROBE_POLICY)
+        self.assertNotIn("generalization", {case["tag"] for case in manifest["cases"]})
 
     def test_a_free_text_tag_is_refused(self):
         """§4.3 fixes the tag vocabulary so the set can be counted by category."""
@@ -385,11 +414,59 @@ class PrivateManifestGoldenPathTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             load_manifest_tool().load_plan({})
 
+    def test_the_gap_evidence_template_is_a_complete_structural_starting_point(self):
+        document = json.loads(
+            (ROOT / "templates" / "private_gap_evidence.template.json").read_text(encoding="utf-8")
+        )
+        task = dict(self.TASK)
+        task["_public_cases"] = []
+        problems = load_manifest_tool().check_plan(
+            load_manifest_tool().load_plan(document), task, document["generalization_probe"]
+        )
+        self.assertEqual(problems, [])
+
     def test_the_plan_role_is_not_copied_into_the_manifest(self):
         """`role` is how the tool sorts the plan; a case has a tag, not a role."""
         for case in self.manifest()["cases"]:
             with self.subTest(case=case["case_id"]):
                 self.assertNotIn("role", case)
+
+
+class GeneralizationProbeTests(unittest.TestCase):
+    TASK = PrivateManifestGoldenPathTests.TASK
+    POLICY = PrivateManifestGoldenPathTests.PROBE_POLICY
+
+    def manifest(self):
+        return load_manifest_tool().build_manifest(
+            PrivateManifestGoldenPathTests.EVIDENCE["cases"], dict(self.TASK), self.POLICY
+        )
+
+    def test_a_runtime_seed_replays_the_same_unlisted_case(self):
+        probe = load_generalization_probe()
+        first, first_seed = probe.materialize_probes(dict(self.TASK), self.manifest(), 20260927)
+        second, second_seed = probe.materialize_probes(dict(self.TASK), self.manifest(), 20260927)
+        self.assertEqual(first_seed, second_seed)
+        self.assertEqual(first, second)
+
+        listed = {json.dumps(case["shape"], sort_keys=True)
+                  for case in self.manifest()["cases"]}
+        self.assertNotIn(json.dumps(first[0]["shape"], sort_keys=True), listed)
+        self.assertTrue(first[0]["case_id"].startswith("generalization_"))
+
+    def test_b_tier_probe_gets_a_policy_derived_expected_path(self):
+        cases, _seed = load_generalization_probe().materialize_probes(
+            dict(self.TASK), self.manifest(), 7
+        )
+        expected = "fused_library" if cases[0]["shape"]["D"] <= 32 else "library_composition"
+        self.assertEqual(cases[0]["expected_path"], expected)
+
+    def test_b_tier_policy_needs_a_default_expected_path_rule(self):
+        policy = dict(self.POLICY)
+        policy["expected_path_rules"] = [
+            {"when": {"D": {"maximum": 32}}, "path": "fused_library"}
+        ]
+        problems = load_generalization_probe().validate_policy(policy, "B_library")
+        self.assertTrue(any("default rule" in problem for problem in problems))
 
 
 class PrivateManifestSchemaTests(unittest.TestCase):
@@ -401,13 +478,15 @@ class PrivateManifestSchemaTests(unittest.TestCase):
     """
 
     # §4.3's tag enum, shared by the public and the hidden list.
-    CASE_TAGS = {"smoke", "correctness", "boundary", "non_aligned", "extreme", "perf", "generalization"}
+    CASE_TAGS = {"smoke", "correctness", "boundary", "non_aligned", "extreme", "perf"}
 
     EVIDENCE = PrivateManifestGoldenPathTests.EVIDENCE
     TASK = PrivateManifestGoldenPathTests.TASK
 
     def manifest(self):
-        return load_manifest_tool().build_manifest(self.EVIDENCE["cases"], dict(self.TASK))
+        return load_manifest_tool().build_manifest(
+            self.EVIDENCE["cases"], dict(self.TASK), PrivateManifestGoldenPathTests.PROBE_POLICY
+        )
 
     def validator(self):
         path = ROOT / "evaluator" / "validate_schemas.py"

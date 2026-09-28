@@ -41,6 +41,11 @@ EXIT_OK = 0
 # change does not own. It predates the grouped scheme.
 EXIT_PRECISION_CONTRACT_MISMATCH = 2
 
+# A B-tier candidate can be implemented and measured while still failing a
+# mandatory task-design prerequisite (for example, fewer than two measured gap
+# categories). It may be worked on, but it must not enter scoring or release.
+EXIT_TASK_NOT_ADMITTED = 3
+
 # ---------------------------------------------------------------------------
 # Environment and data readiness (§4.7 "环境采集", "Case 生成")
 #
@@ -120,8 +125,8 @@ EXIT_STATIC_AUDIT_UNCLASSIFIED = 35
 # ---------------------------------------------------------------------------
 
 # Reading the build product's export table showed a library linked outside the
-# task's whitelist. NOTE: run_task.py does not run this stage yet; the value is
-# declared so the stage has a code to return when it is wired.
+# task's whitelist. Both Python and compiled drivers run this after the build;
+# the Python driver repeats it after evaluation to catch lazy compilation.
 EXIT_LINK_WHITELIST_VIOLATION = 40
 
 # The submission ran, but its dispatch trace does not match the path the case
@@ -165,6 +170,7 @@ EXIT_SUMMARY_FAILED = 70
 EXIT_CODE_DESCRIPTIONS: Dict[int, str] = {
     EXIT_OK: "all requested stages passed",
     EXIT_PRECISION_CONTRACT_MISMATCH: "the requested --precision is not one the task's tensor contract permits",
+    EXIT_TASK_NOT_ADMITTED: "the B-tier task has not satisfied its admission prerequisites",
     EXIT_ENVIRONMENT_UNAVAILABLE: "the device stack could not be imported, so no case could be evaluated",
     EXIT_INPUT_UNAVAILABLE: "the task package, case manifest or submission file could not be read",
     EXIT_CASE_GENERATION_FAILED: "case parameters do not resolve, or a case does not specialise into valid Python",

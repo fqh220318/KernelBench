@@ -9,6 +9,10 @@
     "project": "KernelBench problem set",
     "problem": "KernelBench/level3/31_VisionAttention.py",
     "record": "sources/attention-source-001.json",
+    "revision": "6b1cea28ddea79af6b295fb9a3e3413f393efe3d",
+    "license": "MIT",
+    "snapshot_location": "KernelBench/level3/31_VisionAttention.py",
+    "snapshot_revision": "8d037710795d00fb23b58a8d43d033ea8f44038e",
     "note": "The A-tier reference is the KernelBench problem itself; this package adds the contract around it rather than redefining it."
   },
   "target_environment": {

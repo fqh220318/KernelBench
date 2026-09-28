@@ -50,8 +50,15 @@ import argparse
 import glob
 import json
 import math
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
+
+EVALUATOR_DIR = Path(__file__).resolve().parent
+if str(EVALUATOR_DIR) not in sys.path:
+    sys.path.insert(0, str(EVALUATOR_DIR))
+
+from baseline_readiness import assess, declared_readiness_errors  # noqa: E402
 
 TIER_ORDER = ("A_kernel", "B_library")
 TIER_TITLES = {
@@ -92,8 +99,25 @@ def rank_report(report: dict, baselines: Dict[str, dict]) -> dict:
     if tier not in TIER_ORDER:
         row["unranked"] = f"the report's tier is {tier!r}, which this scoreboard does not rank"
         return row
+    if tier == "B_library":
+        admission = report.get("task_admission") or {}
+        if admission.get("status") != "measured" or admission.get("decision") != "admit":
+            row["unranked"] = (
+                "the B-tier report does not carry a measured/admit task admission; "
+                "a blocked or legacy report cannot enter the scoreboard"
+            )
+            return row
     if baseline is None:
         row["unranked"] = "no baseline record for this task, so there is nothing to divide by"
+        return row
+    readiness = assess(baseline)
+    readiness_errors = declared_readiness_errors(baseline)
+    row["baseline_readiness"] = readiness["status"]
+    if readiness["status"] != "complete" or readiness_errors:
+        row["unranked"] = (
+            "the mandatory §4.4 baseline roster is incomplete or its readiness record has drifted"
+        )
+        row["baseline_problems"] = readiness_errors or readiness["problems"]
         return row
     denominator = (baseline.get("scoring") or {}).get("speedup_denominator")
     row["denominator"] = denominator

@@ -1,0 +1,274 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kernelbench.local/musa/schemas/operator-candidate-pool-1.0.0.json",
+  "title": "MUSA operator candidate pool",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "pool_id",
+    "title",
+    "visibility",
+    "collected_on",
+    "methodology",
+    "summary",
+    "sources",
+    "families",
+    "candidates",
+    "exclusions",
+    "release_rule"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "pool_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_]*$"},
+    "title": {"type": "string", "minLength": 1},
+    "visibility": {"const": "maintainer_only"},
+    "collected_on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+    "methodology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_policy", "tier_policy", "hardware_policy"],
+      "properties": {
+        "source_policy": {"type": "string", "minLength": 1},
+        "tier_policy": {"type": "string", "minLength": 1},
+        "hardware_policy": {"type": "string", "minLength": 1}
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_count",
+        "family_count",
+        "candidate_count",
+        "shortlisted",
+        "needs_probe",
+        "deferred",
+        "hardware_validated"
+      ],
+      "properties": {
+        "source_count": {"type": "integer", "minimum": 1},
+        "family_count": {"type": "integer", "minimum": 1},
+        "candidate_count": {"type": "integer", "minimum": 1},
+        "shortlisted": {"type": "integer", "minimum": 0},
+        "needs_probe": {"type": "integer", "minimum": 0},
+        "deferred": {"type": "integer", "minimum": 0},
+        "hardware_validated": {"type": "integer", "minimum": 0}
+      }
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/source"}
+    },
+    "families": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/family"}
+    },
+    "candidates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/candidate"}
+    },
+    "exclusions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/exclusion"}
+    },
+    "release_rule": {"type": "string", "minLength": 1}
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "project",
+        "authority",
+        "repository",
+        "branch",
+        "revision",
+        "license",
+        "license_verified",
+        "evidence_paths",
+        "validation_status"
+      ],
+      "properties": {
+        "source_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_]*$"},
+        "project": {"type": "string", "minLength": 1},
+        "authority": {
+          "enum": ["local_repository", "vendor_official", "community_project"]
+        },
+        "repository": {"type": "string", "pattern": "^https://"},
+        "branch": {"type": "string", "minLength": 1},
+        "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "license": {"type": "string", "minLength": 1},
+        "license_verified": {"const": true},
+        "evidence_paths": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "validation_status": {
+          "enum": [
+            "local_source_and_historical_measurement",
+            "source_tree_verified_not_built_locally"
+          ]
+        }
+      }
+    },
+    "family": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "family_id",
+        "title",
+        "selection_reason",
+        "semantic_contract_focus"
+      ],
+      "properties": {
+        "family_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_]*$"},
+        "title": {"type": "string", "minLength": 1},
+        "selection_reason": {"type": "string", "minLength": 1},
+        "semantic_contract_focus": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "local_anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "role"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "role": {"type": "string", "minLength": 1},
+        "measurement_note": {"type": "string", "minLength": 1}
+      }
+    },
+    "a_tier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "rationale"],
+      "properties": {
+        "status": {"enum": ["promising", "needs_redesign", "not_suitable"]},
+        "rationale": {"type": "string", "minLength": 1}
+      }
+    },
+    "b_tier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "gap_hypotheses", "rationale"],
+      "properties": {
+        "status": {"enum": ["promising", "needs_gap_probe", "not_suitable"]},
+        "gap_hypotheses": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "unsupported_shape",
+              "semantic_mismatch",
+              "layout_mismatch",
+              "multi_operator_required"
+            ]
+          }
+        },
+        "rationale": {"type": "string", "minLength": 1}
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "name",
+        "family_id",
+        "priority",
+        "decision",
+        "source_refs",
+        "local_anchors",
+        "semantic_scope",
+        "dynamic_dimensions",
+        "target_profiles",
+        "evidence_level",
+        "a_tier",
+        "b_tier",
+        "hardware_validated",
+        "risks",
+        "next_evidence"
+      ],
+      "properties": {
+        "candidate_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_]*$"},
+        "name": {"type": "string", "minLength": 1},
+        "family_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_]*$"},
+        "priority": {"enum": ["P0", "P1", "P2"]},
+        "decision": {"enum": ["shortlisted", "needs_probe", "deferred"]},
+        "source_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_]*$"}
+        },
+        "local_anchors": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/local_anchor"}
+        },
+        "semantic_scope": {"type": "string", "minLength": 1},
+        "dynamic_dimensions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "target_profiles": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "s4000_fp32",
+              "s4000_fp16",
+              "s4000_bf16",
+              "s5000_fp32",
+              "s5000_fp16",
+              "s5000_bf16"
+            ]
+          }
+        },
+        "evidence_level": {
+          "enum": [
+            "local_measured_plus_source",
+            "multi_source_code",
+            "official_source_code",
+            "lead_only"
+          ]
+        },
+        "a_tier": {"$ref": "#/$defs/a_tier"},
+        "b_tier": {"$ref": "#/$defs/b_tier"},
+        "hardware_validated": {"type": "boolean"},
+        "risks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "next_evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "exclusion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "reason"],
+      "properties": {
+        "scope": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

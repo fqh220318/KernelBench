@@ -33,15 +33,20 @@ that a mount rather than a rewrite.
 | file | what it is |
 |---|---|
 | `run_task.py` | the §4.7 pipeline over a Python-module submission: audit, build, link check, correctness, boundary, stability, performance |
-| `run_binary.py` | the same pipeline over a compiled submission: it builds `starter/cpp`, checks the regions §4.6 confines library calls to, runs the torch-free runner per case and grades its tensors against the same goldens |
+| `run_binary.py` | the same pipeline over a compiled submission: it builds `starter/cpp`, checks the regions §4.6 confines library calls to, and grades the torch-free runner in correctness/boundary/stability/performance order with later-stage short-circuiting |
 | `rank.py` | §5 step 8's two tables -- the A-kernel track and the B-library track, ranked apart and never combined |
 | `link_whitelist.py` | reads a build product's dynamic section and checks what it links |
-| `measure_baseline.py` | the B tier's naive/expert measurement, which is the admission gate's input |
+| `measure_baseline.py` | the complete §4.4 A/B roster measurement; the B naive/expert rows are also the admission gate's input |
+| `baseline_readiness.py` | derives roster completeness from case/role rows; a stored `complete` flag is never trusted |
+| `collect_baseline_inventory.py` | emits the redacted local/device collection backlog without copying hidden case details |
 | `candidate_gate.py` | §4.4's geometric-mean gate, including the 1.3 floor |
 | `record_admission.py` | writes an admission decision into a contract, and refuses the ones it cannot prove |
 | `make_private_manifest.py` | builds a hidden case list from recorded gap evidence |
+| `generalization_probe.py` | realizes an unlisted random case from a private runtime policy and emits replay metadata |
 | `probe_sdpa.py` | probes which route a configuration resolves to |
 | `collect_environment.py` | the environment snapshot and its redacted public half |
 | `collect_attention_set.py` | verifies the curated set against the repository and regenerates its index |
 | `validate_schemas.py` | §4.8's six schemas and the tier rules they carry |
+| `audit_agent_package.py` | rejects private assets, undeclared files and unknown generated case data |
+| `package_agent_task.py` | creates the hand-off with all public inputs/goldens, then runs the strict disclosure audit |
 | `exit_codes.py` | the named exit codes the pipeline returns |

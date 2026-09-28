@@ -6,8 +6,8 @@
   "collected_on": "2026-09-20",
 
   "source_archive": {
-    "branch": "feat/import-musa-attention-set",
-    "tip_commit": "f249b2f",
+    "branch": "feat/import-musa-attention-set-useless",
+    "tip_commit": "f249b2fcbddc9d9fb13183437ace87d280a02cca",
     "path": "musa_attention_set",
     "files": 2126,
     "manifest": "musa_attention_set/manifest.csv",

@@ -11,3 +11,9 @@ containment and durability are different problems: ignoring the tree keeps the
 answers out of a public history, and a repository of its own keeps them from being
 lost with a working copy. `private/generated/` is deliberately not stored there --
 the goldens are regenerated on the target machine with `tools/generate_cases.py`.
+
+The public, redacted backlog is `../collection/baseline_collection_plan.json`.
+Regenerate it after mounting this tree with
+`python musa_operator_eval/evaluator/collect_baseline_inventory.py`; it exposes
+only aggregate readiness and public role names, never hidden case ids, shapes,
+seeds, measurements or private failure reasons.

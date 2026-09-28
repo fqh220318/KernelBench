@@ -121,7 +121,11 @@
       "additionalProperties": false,
       "required": [
         "project",
-        "record"
+        "record",
+        "revision",
+        "license",
+        "snapshot_location",
+        "snapshot_revision"
       ],
       "properties": {
         "project": {
@@ -450,7 +454,8 @@
         "status": {
           "enum": [
             "measured",
-            "pending_device_measurement"
+            "pending_device_measurement",
+            "blocked_gap_coverage"
           ]
         },
         "decision": {
@@ -478,7 +483,7 @@
           "type": "string"
         },
         "gap_reason_coverage": {
-          "description": "Guide §4.3 asks for at least two gap-reason categories. A package that cannot reach two records which it reaches, which it does not, and why, so the shortfall is a decision rather than an oversight.",
+          "description": "Guide §4.3 requires at least two gap-reason categories. A package that cannot reach two records the blocker here; the record explains why it is not scoreable and does not waive the floor.",
           "type": "object",
           "required": [
             "state",
@@ -489,7 +494,7 @@
           "properties": {
             "state": {
               "enum": [
-                "open",
+                "blocked",
                 "covered"
               ]
             },
@@ -981,35 +986,74 @@
     },
     {
       "if": {
-        "required": [
-          "tier",
-          "library_policy"
-        ],
+        "required": ["tier", "admission"],
         "properties": {
-          "tier": {
-            "const": "B_library"
-          },
-          "library_policy": {
-            "required": [
-              "required_gap_reasons"
-            ],
-            "properties": {
-              "required_gap_reasons": {
-                "maxItems": 1
-              }
-            }
+          "tier": {"const": "B_library"},
+          "admission": {
+            "required": ["decision"],
+            "properties": {"decision": {"const": "admit"}}
           }
         }
       },
       "then": {
-        "required": [
-          "admission"
-        ],
         "properties": {
           "admission": {
-            "required": [
-              "gap_reason_coverage"
-            ]
+            "properties": {"status": {"const": "measured"}}
+          },
+          "library_policy": {
+            "properties": {"required_gap_reasons": {"minItems": 2}}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["tier", "admission"],
+        "properties": {
+          "tier": {"const": "B_library"},
+          "admission": {
+            "required": ["status"],
+            "properties": {"status": {"const": "blocked_gap_coverage"}}
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "admission": {
+            "required": ["reason", "gap_reason_coverage"],
+            "not": {
+              "required": ["decision"],
+              "properties": {"decision": {"const": "admit"}}
+            },
+            "properties": {
+              "gap_reason_coverage": {
+                "properties": {"state": {"const": "blocked"}}
+              }
+            }
+          },
+          "library_policy": {
+            "properties": {"required_gap_reasons": {"maxItems": 1}}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["tier", "library_policy"],
+        "properties": {
+          "tier": {"const": "B_library"},
+          "library_policy": {
+            "required": ["required_gap_reasons"],
+            "properties": {"required_gap_reasons": {"maxItems": 1}}
+          }
+        }
+      },
+      "then": {
+        "required": ["admission"],
+        "properties": {
+          "admission": {
+            "required": ["status", "reason", "gap_reason_coverage"],
+            "properties": {"status": {"const": "blocked_gap_coverage"}}
           }
         }
       }

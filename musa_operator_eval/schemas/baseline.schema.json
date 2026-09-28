@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://kernelbench.local/musa/schemas/baseline-1.0.0.json",
   "title": "MUSA task baseline (private/*/baseline.json)",
-  "description": "Guide §4.4. A baseline is only meaningful against the environment it was measured in, so the snapshot id is required and every row has to say which implementation it belongs to. The B tier adds two implementations that the A tier does not have -- the naive library composition (the lower bound) and the expert dispatch (the speedup denominator), so for B_library the scoring denominator is pinned to the expert dispatch.",
+  "description": "Guide §4.4. A baseline is only meaningful against the environment it was measured in, so the snapshot id is required and every row has to say which implementation it belongs to. A requires upstream_musa, mudnn_fused, torch_musa_sdpa and torch_musa_eager; B adds naive_library_composition (the lower bound) and expert_dispatch (the speedup denominator). The readiness summary is re-derived by the validator, gate and ranker, and an unavailable mandatory row is incomplete rather than scoreable.",
   "$defs": {
     "result": {
       "type": "object",
@@ -54,7 +54,8 @@
           "type": "object"
         },
         "reason": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
         "dtype": {
           "type": "string",
@@ -148,7 +149,16 @@
             }
           }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["status"],
+            "properties": {"status": {"const": "unavailable"}}
+          },
+          "then": {"required": ["reason"]}
+        }
+      ]
     }
   },
   "type": "object",
@@ -161,7 +171,8 @@
     "measurement_protocol",
     "implementations",
     "results",
-    "scoring"
+    "scoring",
+    "readiness"
   ],
   "properties": {
     "schema_version": {
@@ -267,6 +278,27 @@
         "$ref": "#/$defs/result"
       }
     },
+    "readiness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status", "required_roles", "case_count", "missing_roles", "missing_rows",
+        "duplicate_rows", "unavailable_rows", "nonpassing_rows", "problems"
+      ],
+      "properties": {
+        "status": {"enum": ["complete", "incomplete"]},
+        "required_roles": {
+          "type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}
+        },
+        "case_count": {"type": "integer", "minimum": 0},
+        "missing_roles": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "missing_rows": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "duplicate_rows": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "unavailable_rows": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "nonpassing_rows": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "problems": {"type": "array", "items": {"type": "string"}}
+      }
+    },
     "scoring": {
       "type": "object",
       "required": [
@@ -358,6 +390,24 @@
                     }
                   }
                 }
+              },
+              {
+                "not": {
+                  "items": {
+                    "not": {
+                      "const": "torch_musa_sdpa"
+                    }
+                  }
+                }
+              },
+              {
+                "not": {
+                  "items": {
+                    "not": {
+                      "const": "torch_musa_eager"
+                    }
+                  }
+                }
               }
             ]
           },
@@ -367,6 +417,27 @@
                 "const": "expert_dispatch"
               }
             }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["tier"],
+        "properties": {"tier": {"const": "A_kernel"}}
+      },
+      "then": {
+        "properties": {
+          "implementations": {
+            "allOf": [
+              {"not": {"items": {"not": {"const": "upstream_musa"}}}},
+              {"not": {"items": {"not": {"const": "mudnn_fused"}}}},
+              {"not": {"items": {"not": {"const": "torch_musa_sdpa"}}}},
+              {"not": {"items": {"not": {"const": "torch_musa_eager"}}}}
+            ]
+          },
+          "scoring": {
+            "properties": {"speedup_denominator": {"const": "upstream_musa"}}
           }
         }
       }

@@ -5,11 +5,12 @@ operator evaluation tracks. Version 0 is scoped to Attention families; other
 families must add their own semantic contract instead of reusing
 Attention-specific fields.
 
-Evaluation itself (compilation, correctness, timing, speedup) is **not**
-implemented here. It runs on the KernelBench framework in `src/kernelbench/`:
-`eval.py`, `timing.py`, `kernel_static_checker.py`, `musa_extension.py` and
-`scripts/generate_baseline_time.py`. This directory only carries what the
-framework has no notion of.
+The numerical execution and timing primitives come from the KernelBench
+framework in `src/kernelbench/` (`eval.py`, `timing.py`,
+`kernel_static_checker.py`, `musa_extension.py`). This directory adds the parts
+the framework has no notion of and drives them end to end: A/B contracts, hidden
+case policy, dispatch evidence, complete baseline rosters, compiled submissions,
+stage short-circuiting, admission and separate rankings.
 
 Both tracks are packaged, but around different things.
 
@@ -72,8 +73,11 @@ pattern.
   component versions live here and nowhere else, so a machine is described once
   and two tasks on it cannot disagree about what it is. Full snapshots, which
   keep the serial number and GPU UUID, live under `private/environments/`.
-- `sets/`: curated operator sets, each with a hand-written manifest and a
-  generated index. `sets/attention/` covers the attention family and records
+- `sets/`: curated operator sets and maintainer review indexes. `sets/attention/`
+  has a hand-written manifest and generated index for the active attention
+  family. `sets/candidates/` contains generated maintainer indexes for the
+  cross-family pool and the Attention expansion pool; neither is a released
+  task set. The attention set records
   which A-tier answer, which measurement and which candidate kernel already
   exist for every entry. A set is a maintainer ledger — it names the A-tier
   answer path and the candidate implementations, so it is never agent-visible.
@@ -82,8 +86,20 @@ pattern.
   to the library and the operation rather than to one task, so every task in a
   family names the same file; the name is what stops a second family from
   quietly inheriting a first family's boundaries.
-- `sources/`: provenance and license records. `attention-source-001.json` covers the upstream snapshots a task derives from; `attention-kernel-candidates.json` inventories candidate attention kernel implementations and which target each can serve.
-- `templates/`: baseline and gap-evidence templates.
+- `sources/`: provenance and license records. `attention-source-001.json` covers
+  the upstream snapshots a task derives from;
+  `attention-kernel-candidates.json` inventories candidate attention kernel
+  implementations and which target each can serve. The maintainer-only
+  `operator_candidate_pool.json` pins sources, licenses and triage decisions for
+  possible new families. `attention_operator_candidate_pool.json` does the same
+  for backward, varlen, paged KV, MLA, sparse, linear and quantized Attention
+  expansion. Their rows are research leads, not completed tasks or hardware
+  evidence.
+- `templates/`: schema-valid incomplete A/B baseline templates and a complete
+  hidden gap-evidence skeleton. Templates are validation inputs, not evidence of
+  a finished device run.
+- `collection/`: redacted collection inventories. These contain public task ids
+  and role names only; hidden cases and measurement details stay under `private/`.
 - `tools/`: the public flow. `generate_cases.py` turns a §4.3 case entry into
   inputs and a golden, and `case_specialization.py` is the convention that turns a
   case into a runnable problem. The evaluator imports that convention from here
@@ -94,6 +110,7 @@ pattern.
   the scripts out of the agent's hands; see `evaluator/README.md` for how this
   checkout stands against that and what the production mount looks like.
 - `tests/`: CPU-only unit tests for the tools above.
+- `progress/`: one Markdown hand-off for each completed compliance phase.
 - `CONFORMANCE.md`: the guide, requirement by requirement, with the shortfalls
   this set carries stated rather than left to be found.
 - `private/`: evaluator-only assets; ignored by Git except for its README.
@@ -129,18 +146,34 @@ python musa_operator_eval/evaluator/link_whitelist.py \
 # §2's publication audit: what the agent is handed holds task definitions only
 python musa_operator_eval/evaluator/audit_agent_package.py
 
+# Build the actual agent hand-off. Unlike the development tree, the release
+# contains every public smoke input and golden promised by §4.3.
+python musa_operator_eval/evaluator/package_agent_task.py \
+  --task-dir musa_operator_eval/tasks/sdpa_forward_pilot \
+  --output-dir releases/sdpa_forward_pilot
+
 # Build a private hidden-case manifest from measured gap evidence
 python musa_operator_eval/evaluator/make_private_manifest.py \
   --evidence <private-gap-evidence.json> \
+  --task-dir musa_operator_eval/tasks/<task-id> \
   --output musa_operator_eval/private/<task-id>/cases.private.json
 
-# Measure the B-tier baselines in the gate's own shape (needs the device)
+# Produce/check the redacted baseline backlog without a device or private assets
+python musa_operator_eval/evaluator/collect_baseline_inventory.py
+python musa_operator_eval/evaluator/collect_baseline_inventory.py --check
+
+# Measure the complete B-tier roster in the gate's own shape (needs the device).
+# torch_musa_eager is measured automatically from the task reference; every
+# other mandatory role is supplied explicitly.
 python musa_operator_eval/evaluator/measure_baseline.py \
   --task-dir musa_operator_eval/tasks/kb_l3_43_b \
+  --cases musa_operator_eval/private/<task-id>/cases.private.json \
+  --tier B_library \
   --naive  musa_operator_eval/private/<task-id>/naive/model_new.py \
   --expert musa_operator_eval/private/<task-id>/expert/model_new.py \
-  --blind  musa_operator_eval/private/<task-id>/blind/model_new.py \
-  --unavailable musa_operator_eval/private/<task-id>/unavailable.json \
+  --implementation upstream_musa=<model-module.py> \
+  --implementation mudnn_fused=<model-module.py> \
+  --implementation torch_musa_sdpa=<model-module.py> \
   --output musa_operator_eval/private/<task-id>/baseline.hidden.json
 
 # Apply the B-tier naive/expert admission gate
@@ -152,13 +185,15 @@ python musa_operator_eval/evaluator/run_task.py --submission <model_new.py> \
   --backend musa --precision fp16 --output runs/<task>/report.json
 # Grade the hidden set, which lives outside the task package
 python musa_operator_eval/evaluator/run_task.py --submission <model_new.py> \
-  --cases musa_operator_eval/private/<task-id>/cases.private.json
+  --cases musa_operator_eval/private/<task-id>/cases.private.json \
+  --generalization-seed 20260927  # optional: replay a reported probe
 
 # The same pipeline over a compiled submission (§4.6's torch-free runner)
 python musa_operator_eval/evaluator/run_binary.py \
   --task-dir musa_operator_eval/tasks/<task-id> --submission <dir with kernel.mu> \
   --cases musa_operator_eval/private/<task-id>/cases.private.json \
-  --generated-dir musa_operator_eval/private/generated/<task-id>
+  --generated-dir musa_operator_eval/private/generated/<task-id> \
+  --generalization-seed 20260927  # optional: replay a reported probe
 
 # §5 step 8: the two tracks, ranked apart and never combined
 python musa_operator_eval/evaluator/rank.py --report runs/a/report.json \
@@ -167,6 +202,13 @@ python musa_operator_eval/evaluator/rank.py --report runs/a/report.json \
 # Verify a curated set and regenerate its index
 python musa_operator_eval/evaluator/collect_attention_set.py
 python musa_operator_eval/evaluator/collect_attention_set.py --check   # verify only, for CI
+
+# Validate both maintainer research pools and regenerate/check their indexes
+python musa_operator_eval/evaluator/collect_operator_candidate_pool.py
+python musa_operator_eval/evaluator/collect_operator_candidate_pool.py --check
+
+# A single pool can be selected during review
+python musa_operator_eval/evaluator/collect_operator_candidate_pool.py --pool attention --check
 ```
 
 `run_task.py` is the entry point for a whole task. It specializes `problem.py`
@@ -175,12 +217,27 @@ submission against the reference, and checks the dispatch trace. `--static-only`
 stops after the source audit and the case-override check, so it runs on a
 machine with no device, and `--cases` points it at a manifest outside the task
 package, which is how the hidden set is graded without being readable from it.
+The private manifest stores a `generalization_probe` sampling policy rather than
+a fixed probe case. At run time the evaluator draws a seed from system entropy,
+rejects shapes and seeds already present in the public/hidden lists, generates
+the input and golden, and records the realized seed and shape only in that run's
+report. Passing `--generalization-seed` reproduces a reported probe for debugging.
 
-`measure_baseline.py` measures each implementation per case under the protocol in
-its own `PROTOCOL` and writes the shape `candidate_gate.py` reads. Both live on
-the device side: they check correctness before timing anything, and they record
-an implementation it cannot honestly build as `unavailable` with a reason rather
-than substituting a lookalike.
+`measure_baseline.py` measures each mandatory implementation per case under the
+framework protocol and writes the shape `candidate_gate.py` reads. It requires
+all four A roles or all six B roles to be supplied; `torch_musa_eager` is the task
+reference and is measured automatically. An implementation that cannot honestly
+be built may still be recorded as `unavailable` with a reason, but the resulting
+record is deliberately `readiness.status=incomplete` and cannot be admitted or
+ranked. `collect_baseline_inventory.py` turns that state into a redacted backlog
+without publishing hidden case identities or measurements.
+
+A B task is released and scored only when its contract is `measured/admit` and
+declares at least two measured gap-reason categories. The four entry-scoped B
+packages currently retain their earlier measurements but are marked
+`blocked_gap_coverage`; only the family-scoped pilot currently meets the §4.3
+category floor. The manifest builder, admission recorder, release packager, both
+evaluators, and the ranker all enforce that state.
 
 Every implementation is passed in as a module path rather than named in the
 tool's source, because reaching a task's attention core is the task's business:
@@ -200,7 +257,10 @@ matches the file it was read from. It then regenerates `sets/attention/SET.md`.
 Exit code is non-zero on drift, so a re-run of a baseline cannot silently leave
 a stale number in the index.
 
-Public inputs and goldens are regenerated on demand and are not committed.
+Public inputs and goldens are regenerated on demand and are not committed to the
+development tree. `package_agent_task.py` generates them into the release copy
+and refuses to publish unless every public case has both manifests and the
+strict disclosure audit passes.
 All tools are standard-library-plus-NumPy and are hardware-independent; the
 probes and baselines are not, and must run on the target device.
 

@@ -339,6 +339,18 @@
         "B_library"
       ]
     },
+    "task_admission": {
+      "description": "Snapshot of the task admission used for this run. The B-tier scoreboard requires measured/admit and rejects missing or blocked snapshots.",
+      "type": ["object", "null"],
+      "properties": {
+        "status": {
+          "enum": ["measured", "pending_device_measurement", "blocked_gap_coverage"]
+        },
+        "decision": {
+          "enum": ["admit", "reject"]
+        }
+      }
+    },
     "backend": {
       "type": "string",
       "minLength": 1
@@ -400,6 +412,21 @@
       "items": {
         "type": "string",
         "minLength": 1
+      }
+    },
+    "evaluation_stages": {
+      "description": "The ordered correctness/boundary/stability/performance sub-stages. A failed stage is completed for all of its own cases; every later stage is recorded as skipped.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stage", "status", "cases"],
+        "properties": {
+          "stage": {"enum": ["correctness", "boundary", "stability", "performance"]},
+          "status": {"enum": ["not_present", "passed", "failed", "skipped"]},
+          "cases": {"type": "integer", "minimum": 0},
+          "failed": {"type": "integer", "minimum": 1}
+        }
       }
     },
     "contract": {

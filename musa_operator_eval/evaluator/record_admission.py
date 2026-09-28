@@ -20,6 +20,7 @@ geometric mean is a number nobody can re-derive from the artifact it came from.
     python3 musa_operator_eval/evaluator/record_admission.py \
         --task-dir musa_operator_eval/tasks/kb_l3_31_b \
         --baseline musa_operator_eval/private/vision_attention_b_v0/baseline.hidden.json \
+        --cases musa_operator_eval/private/vision_attention_b_v0/cases.private.json \
         --admission musa_operator_eval/private/vision_attention_b_v0/admission.json
 
     # and with --apply to write it
@@ -33,7 +34,14 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from pathlib import Path
+
+EVALUATOR_DIR = Path(__file__).resolve().parent
+if str(EVALUATOR_DIR) not in sys.path:
+    sys.path.insert(0, str(EVALUATOR_DIR))
+
+from baseline_readiness import assess, declared_readiness_errors  # noqa: E402
 
 
 EXPERT_ROLE = "expert_dispatch"
@@ -44,12 +52,32 @@ def load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def audit(baseline: dict, admission: dict, task: dict) -> tuple[list[str], dict]:
+def audit(
+    baseline: dict,
+    admission: dict,
+    task: dict,
+    expected_case_ids=None,
+) -> tuple[list[str], dict]:
     """The two halves of §4.4, checked against the artifacts rather than assumed.
 
     Returns the problems found and the measurements worth recording.
     """
     problems: list[str] = []
+
+    readiness = assess(baseline, expected_case_ids)
+    readiness_errors = declared_readiness_errors(baseline, expected_case_ids)
+    if readiness["status"] != "complete" or readiness_errors:
+        problems.append(
+            "the mandatory §4.4 baseline roster is incomplete: "
+            + "; ".join(readiness_errors or readiness["problems"])
+        )
+
+    required_gap_reasons = set((task.get("library_policy") or {}).get("required_gap_reasons") or [])
+    if admission.get("decision") == "admit" and len(required_gap_reasons) < 2:
+        problems.append(
+            "the task declares fewer than two required gap-reason categories; guide §4.3 "
+            "blocks admission until a second measured category exists"
+        )
 
     if baseline.get("task_id") != task.get("id"):
         problems.append(
@@ -68,14 +96,18 @@ def audit(baseline: dict, admission: dict, task: dict) -> tuple[list[str], dict]
     for row in baseline.get("results", []):
         by_case.setdefault(row["case_id"], {})[row["implementation"]] = row
 
-    hidden = sorted(case_id for case_id in by_case if case_id.startswith("hidden_"))
+    hidden = (
+        sorted(set(expected_case_ids))
+        if expected_case_ids is not None
+        else sorted(case_id for case_id in by_case if case_id.startswith("hidden_"))
+    )
     if not hidden:
         problems.append("the baseline carries no hidden case, so it is not the set the gate is defined over")
 
     # Half one: every hidden case passes, for everything that has to pass.
     failures = []
     for case_id in hidden:
-        rows = by_case[case_id]
+        rows = by_case.get(case_id, {})
         for role in (NAIVE_ROLE, EXPERT_ROLE):
             row = rows.get(role)
             if row is None:
@@ -85,7 +117,7 @@ def audit(baseline: dict, admission: dict, task: dict) -> tuple[list[str], dict]
 
     # Half two: the expert's trace matched the path the case expected.
     for case_id in hidden:
-        row = by_case[case_id].get(EXPERT_ROLE)
+        row = by_case.get(case_id, {}).get(EXPERT_ROLE)
         if row is None or row.get("status") != "pass":
             continue  # already reported by half one
         if row.get("dispatch_trace_passed") is not True:
@@ -101,7 +133,7 @@ def audit(baseline: dict, admission: dict, task: dict) -> tuple[list[str], dict]
 
     ratios = {}
     for case_id in hidden:
-        rows = by_case[case_id]
+        rows = by_case.get(case_id, {})
         naive, expert = rows.get(NAIVE_ROLE), rows.get(EXPERT_ROLE)
         if not naive or not expert:
             continue
@@ -190,6 +222,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--task-dir", type=Path, required=True)
     parser.add_argument("--baseline", type=Path, required=True)
+    parser.add_argument(
+        "--cases",
+        type=Path,
+        required=True,
+        help="the private case manifest; admission is checked against its complete case id set",
+    )
     parser.add_argument("--admission", type=Path, required=True)
     parser.add_argument("--apply", action="store_true", help="write the block; without it, print it")
     args = parser.parse_args()
@@ -197,9 +235,11 @@ def main() -> int:
     contract_path = args.task_dir / "task.json"
     task = load(contract_path)
     baseline = load(args.baseline)
+    cases = load(args.cases)
     admission = load(args.admission)
 
-    problems, measurements = audit(baseline, admission, task)
+    expected_case_ids = [case["case_id"] for case in cases.get("cases", [])]
+    problems, measurements = audit(baseline, admission, task, expected_case_ids)
 
     block, evidence = admission_blocks(measurements, baseline, admission, args.baseline)
 

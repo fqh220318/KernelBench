@@ -35,7 +35,22 @@ def measurement(case_id, implementation, latency_ms, status="pass"):
 
 
 def baseline(results, threshold=1.3):
-    return {"results": results, "scoring": {"minimum_naive_to_expert_ratio": threshold}}
+    results = list(results)
+    case_ids = sorted({row["case_id"] for row in results})
+    auxiliary = ("upstream_musa", "mudnn_fused", "torch_musa_sdpa", "torch_musa_eager")
+    present = {(row["case_id"], row["implementation"]) for row in results}
+    for case_id in case_ids:
+        for implementation in auxiliary:
+            if (case_id, implementation) not in present:
+                results.append(measurement(case_id, implementation, 1.0))
+    document = {
+        "tier": "B_library",
+        "implementations": list(candidate_gate.B_REQUIRED_ROLES),
+        "results": results,
+        "scoring": {"minimum_naive_to_expert_ratio": threshold},
+    }
+    document["readiness"] = candidate_gate.assess(document)
+    return document
 
 
 class DecisionTests(unittest.TestCase):
@@ -105,21 +120,23 @@ class AggregationTests(unittest.TestCase):
 
 
 class PairingTests(unittest.TestCase):
-    def test_a_case_missing_the_expert_is_dropped(self):
+    def test_a_case_missing_the_expert_makes_the_baseline_incomplete(self):
         result = evaluate(baseline([
             measurement("c1", "naive_library_composition", 4.0),
             measurement("c1", "expert_dispatch", 1.0),
             measurement("c2", "naive_library_composition", 100.0),
         ]))
-        self.assertEqual(set(result["ratios"]), {"c1"})
+        self.assertEqual(result["decision"], "insufficient_data")
+        self.assertEqual(result["readiness"]["status"], "incomplete")
 
-    def test_a_case_missing_the_naive_baseline_is_dropped(self):
+    def test_a_case_missing_the_naive_makes_the_baseline_incomplete(self):
         result = evaluate(baseline([
             measurement("c1", "naive_library_composition", 4.0),
             measurement("c1", "expert_dispatch", 1.0),
             measurement("c2", "expert_dispatch", 1.0),
         ]))
-        self.assertEqual(set(result["ratios"]), {"c1"})
+        self.assertEqual(result["decision"], "insufficient_data")
+        self.assertEqual(result["readiness"]["status"], "incomplete")
 
     def test_a_failing_implementation_is_not_paired(self):
         """A ratio against a wrong answer would admit a task for the wrong reason."""
@@ -154,19 +171,18 @@ class PairingTests(unittest.TestCase):
     def test_no_results_is_insufficient_data(self):
         result = evaluate(baseline([]))
         self.assertEqual(result["decision"], "insufficient_data")
-        self.assertIn("no paired", result["reason"])
+        self.assertIn("baseline roster is incomplete", result["reason"])
 
     def test_other_implementations_are_ignored(self):
         result = evaluate(baseline([
             measurement("c1", "naive_library_composition", 4.0),
             measurement("c1", "expert_dispatch", 1.0),
             measurement("c1", "torch_musa_sdpa_blind", 0.01),
-            measurement("c1", "upstream_musa", 0.01, status="unavailable"),
+            measurement("c1", "upstream_musa", 0.01, status="pass"),
         ]))
         self.assertEqual(result["ratios"], {"c1": 4.0})
 
-    def test_unavailable_measurements_do_not_break_the_decision(self):
-        """The template names six implementations; three may not exist yet."""
+    def test_a_required_unavailable_implementation_makes_the_gate_incomplete(self):
         result = evaluate(baseline([
             measurement("c1", "naive_library_composition", 4.0),
             measurement("c1", "expert_dispatch", 1.0),
@@ -174,8 +190,9 @@ class PairingTests(unittest.TestCase):
             measurement("c1", "mudnn_fused", None, status="unavailable"),
             measurement("c1", "torch_musa_eager", None, status="unavailable"),
         ]))
-        self.assertEqual(result["decision"], "admit")
-        self.assertEqual(result["ratios"], {"c1": 4.0})
+        self.assertEqual(result["decision"], "insufficient_data")
+        self.assertEqual(result["readiness"]["status"], "incomplete")
+        self.assertTrue(result["readiness"]["unavailable_rows"])
 
 
 if __name__ == "__main__":

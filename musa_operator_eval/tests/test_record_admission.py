@@ -31,6 +31,9 @@ def task(snapshot=SNAPSHOT):
         "id": "example_b_v0",
         "target_environment": {"snapshot_id": snapshot},
         "admission": {"status": "pending_device_measurement", "reason": "not measured yet"},
+        "library_policy": {
+            "required_gap_reasons": ["unsupported_shape", "semantic_mismatch"],
+        },
     }
 
 
@@ -59,11 +62,16 @@ def baseline(cases=("hidden_gap_001", "hidden_gap_002", "hidden_gap_003"), ratio
                 recorded_paths=["fused_library"],
             )
         )
+        for implementation in ("upstream_musa", "mudnn_fused", "torch_musa_sdpa", "torch_musa_eager"):
+            results.append(row(case_id, implementation, 1.0))
     document = {
         "task_id": "example_b_v0",
         "tier": "B_library",
         "environment_snapshot": SNAPSHOT,
-        "implementations": [recorder.NAIVE_ROLE, recorder.EXPERT_ROLE],
+        "implementations": [
+            "upstream_musa", "mudnn_fused", "torch_musa_sdpa", "torch_musa_eager",
+            recorder.NAIVE_ROLE, recorder.EXPERT_ROLE,
+        ],
         "results": results,
         "scoring": {
             "speedup_denominator": recorder.EXPERT_ROLE,
@@ -73,6 +81,7 @@ def baseline(cases=("hidden_gap_001", "hidden_gap_002", "hidden_gap_003"), ratio
         },
     }
     document.update(overrides)
+    document["readiness"] = recorder.assess(document)
     return document
 
 
@@ -91,6 +100,12 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(problems, [])
         self.assertAlmostEqual(measurements["geometric_mean_ratio"], 2.0)
         self.assertEqual(len(measurements["hidden_cases"]), 3)
+
+    def test_an_admit_with_only_one_gap_category_is_refused(self):
+        incomplete = task()
+        incomplete["library_policy"]["required_gap_reasons"] = ["unsupported_shape"]
+        problems, _ = recorder.audit(baseline(), admission(), incomplete)
+        self.assertTrue(any("fewer than two" in problem for problem in problems), problems)
 
     def test_a_failing_hidden_case_is_refused(self):
         """Half one. Skipping a case is fine for the mean and not for the decision."""
@@ -130,6 +145,17 @@ class AuditTests(unittest.TestCase):
         """The gate is defined over the hidden set, not over whatever was measured."""
         problems, _ = recorder.audit(baseline(cases=("smoke_001",), ratios=(2.0,)), admission(), task())
         self.assertTrue(any("no hidden case" in problem for problem in problems), problems)
+
+    def test_a_baseline_omitting_one_manifest_case_is_refused(self):
+        document = baseline(cases=("hidden_gap_001", "hidden_gap_002"), ratios=(2.0, 2.0))
+        problems, _ = recorder.audit(
+            document,
+            admission(),
+            task(),
+            ("hidden_gap_001", "hidden_gap_002", "hidden_gap_003"),
+        )
+        self.assertTrue(any("hidden_gap_003" in problem and "missing" in problem
+                            for problem in problems), problems)
 
     def test_a_geometric_mean_that_disagrees_with_its_inputs_is_refused(self):
         """The gate's own arithmetic is re-derived rather than trusted."""

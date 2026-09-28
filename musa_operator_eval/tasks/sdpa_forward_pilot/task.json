@@ -15,12 +15,12 @@
     "note": "This package is scoped to the family, not to one entry: its problem generalises the attention core to causal, windowed and grouped-query configurations that no single KernelBench entry asks for. Each of the entries it covers also has an entry-scoped package that reproduces that entry's own problem, because §4.2 makes an A/B pair share one semantic contract and this package's contract is the wider one."
   },
   "source": {
-    "project": "attention-source-001",
-    "revision": "snapshot-20260901",
-    "license": "maintainer-verified-open-source",
+    "project": "MUSA attention source archive",
+    "revision": "f249b2fcbddc9d9fb13183437ace87d280a02cca",
+    "license": "BSD-3-Clause AND Apache-2.0 AND MIT",
     "record": "sources/attention-source-001.json",
-    "snapshot_location": "outside this repository; see the source record",
-    "snapshot_revision": "2026-09-01"
+    "snapshot_location": "musa_attention_set on feat/import-musa-attention-set-useless",
+    "snapshot_revision": "f249b2fcbddc9d9fb13183437ace87d280a02cca"
   },
   "target_environment": {
     "snapshot_id": "musa-5f9d7b9dd1233a68",

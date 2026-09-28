@@ -629,12 +629,69 @@ class ExitCodeTests(unittest.TestCase):
         self.assertEqual(code, exit_codes.EXIT_STATIC_AUDIT_FORBIDDEN_API)
 
 
+class RuntimeGeneralizationIntegrationTests(unittest.TestCase):
+    def test_the_driver_generates_and_appends_only_the_runtime_realisation(self):
+        task = {"id": "probe_b_v0", "tier": "B_library"}
+        manifest = {
+            "case_generation": {"tool": "musa_operator_eval/tools/generate_cases.py"},
+            "cases": [{
+                "case_id": "hidden_001", "tag": "boundary", "seed": 1,
+                "dtype": "float16", "shape": {"B": 1, "S": 64},
+            }],
+            "generalization_probe": {
+                "generator": "musa_operator_eval/evaluator/generalization_probe.py",
+                "seed_source": "runtime_entropy",
+                "count": 1,
+                "dtype_choices": ["float16"],
+                "shape_space": {"B": {"choices": [1, 2]}, "S": {"choices": [96, 128]}},
+                "template": {"distribution": "normal"},
+                "expected_path_rules": [{"path": "library_composition"}],
+            },
+        }
+        generated = []
+        generator = types.SimpleNamespace(
+            generate_case=lambda case, output, task_dir: generated.append(
+                (dict(case), Path(output), Path(task_dir))
+            )
+        )
+        with tempfile.TemporaryDirectory() as temporary, \
+                mock.patch.object(run_task, "load_module_from_path", return_value=generator):
+            root = Path(temporary)
+            metadata = run_task.materialize_runtime_generalization(
+                task, manifest, root / "generated", root / "task", 1234
+            )
+
+        self.assertEqual(metadata["runtime_seed"], 1234)
+        self.assertEqual(len(metadata["cases"]), 1)
+        self.assertEqual(len(generated), 1)
+        self.assertEqual(len(manifest["cases"]), 2)
+        self.assertEqual(manifest["cases"][-1]["expected_path"], "library_composition")
+        self.assertNotEqual(manifest["cases"][0]["shape"], manifest["cases"][-1]["shape"])
+
+
 class ShortCircuitTests(unittest.TestCase):
     """A failed stage must not be followed by the next one (§4.7)."""
 
     def setUp(self):
         self.task, self.cases, self.problem_source = run_task.load_task(TASK_DIR)
         self.cases_list = self.cases["cases"]
+
+    def test_a_b_task_below_the_gap_category_floor_never_starts_scoring(self):
+        task = json.loads(json.dumps(self.task))
+        task["library_policy"]["required_gap_reasons"] = ["unsupported_shape"]
+        task["admission"] = {
+            "status": "blocked_gap_coverage",
+            "reason": "only one measured category",
+        }
+        with mock.patch.object(
+            run_task, "materialize_runtime_generalization", side_effect=AssertionError("must not generate")
+        ):
+            report = run_task.evaluate_task(
+                task, {"cases": self.cases_list}, self.problem_source, VALID_SUBMISSION,
+                "musa", "fp16", 1, 5, False, Path("/tmp/unused"),
+            )
+        self.assertEqual(report["summary"]["exit_code"], exit_codes.EXIT_TASK_NOT_ADMITTED)
+        self.assertEqual(report["stages"], [])
 
     def test_a_broken_case_mapping_stops_before_the_audit(self):
         """The audit is not run at all, rather than run and aggregated."""
@@ -763,6 +820,21 @@ class ShortCircuitTests(unittest.TestCase):
         self.assertFalse(by_id["b1"].get("skipped", False))
         self.assertTrue(by_id["s1"]["skipped"])
 
+    def test_manifest_order_cannot_run_performance_before_correctness(self):
+        cases = [
+            {"case_id": "p1", "tag": "perf"},
+            {"case_id": "c1", "tag": "correctness"},
+        ]
+        outcomes = {"c1": {"correctness": False}}
+        with mock.patch.object(run_task, "run_case", self._stub_rows(outcomes)):
+            rows, exit_code = run_task.evaluate_cases(
+                self.task, cases, self.problem_source, VALID_SUBMISSION,
+                "musa", "fp16", 1, 5, False,
+            )
+        self.assertEqual(exit_code, exit_codes.EXIT_CORRECTNESS_FAILED)
+        self.assertEqual([row["case_id"] for row in rows], ["c1", "p1"])
+        self.assertTrue(rows[1]["skipped"])
+
     def test_a_perf_case_without_a_measurement_reports_the_perf_code(self):
         cases = [{"case_id": "p1", "tag": "perf"}]
         outcomes = {"p1": {"runtime": -1.0, "passed": False}}
@@ -813,10 +885,11 @@ class ShortCircuitTests(unittest.TestCase):
             "results": [], "counts": {}, "fatal": False, "exit_code": exit_codes.EXIT_OK,
         }), mock.patch.object(run_task, "run_static_audit", return_value=(True, [], [])), \
                 mock.patch.object(run_task, "run_case", side_effect=ImportError("No module named 'torch'")):
-            report = run_task.evaluate_task(
-                self.task, cases_manifest, self.problem_source, VALID_SUBMISSION,
-                "musa", "fp16", 1, 5, False, Path("/tmp/unused"), TASK_DIR,
-            )
+            with tempfile.TemporaryDirectory() as temporary:
+                report = run_task.evaluate_task(
+                    self.task, cases_manifest, self.problem_source, VALID_SUBMISSION,
+                    "musa", "fp16", 1, 5, False, Path(temporary), TASK_DIR,
+                )
         self.assertEqual(report["summary"]["exit_code"], exit_codes.EXIT_ENVIRONMENT_UNAVAILABLE)
         self.assertIn("torch", report["environment"]["error"])
 

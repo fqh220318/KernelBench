@@ -1,6 +1,87 @@
 {
-  "environment_snapshot": "REPLACE_WITH_SNAPSHOT_ID",
-  "gaps": [
-    {"case_id": "hidden_gap_001", "reason": "REPLACE_WITH_MEASURED_REASON", "expected_path": "REPLACE_WITH_LIBRARY_COMPOSITION_OR_CUSTOM_FALLBACK", "evidence": "REPLACE_WITH_PROBE_RESULT_AND_ERROR"}
-  ]
+  "template_note": "Replace every example shape, seed, expected path and evidence string with measurements from the target snapshot. Do not publish the completed file.",
+  "environment_snapshot": "replace-with-snapshot-id",
+  "cases": [
+    {
+      "case_id": "hidden_gap_001",
+      "role": "gap",
+      "tag": "boundary",
+      "seed": 90001,
+      "dtype": "float16",
+      "shape": {"B": 1, "H_q": 4, "H_kv": 4, "S_q": 127, "S_kv": 127, "D": 64},
+      "attributes": {"scale": 0.125, "causal": false, "window_left": -1, "window_right": -1},
+      "distribution": "normal",
+      "expected_path": "library_composition",
+      "library_gap": {
+        "reason": "unsupported_shape",
+        "expected_path": "library_composition",
+        "evidence": "replace with the target-device probe status and error"
+      }
+    },
+    {
+      "case_id": "hidden_gap_002",
+      "role": "gap",
+      "tag": "non_aligned",
+      "seed": 90002,
+      "dtype": "float16",
+      "shape": {"B": 1, "H_q": 4, "H_kv": 4, "S_q": 129, "S_kv": 129, "D": 96},
+      "attributes": {"scale": 0.10206207261596575, "causal": false, "window_left": -1, "window_right": -1},
+      "distribution": "normal",
+      "expected_path": "library_composition",
+      "library_gap": {
+        "reason": "unsupported_shape",
+        "expected_path": "library_composition",
+        "evidence": "replace with the target-device probe status and error"
+      }
+    },
+    {
+      "case_id": "hidden_gap_003",
+      "role": "gap",
+      "tag": "extreme",
+      "seed": 90003,
+      "dtype": "bfloat16",
+      "shape": {"B": 2, "H_q": 8, "H_kv": 2, "S_q": 257, "S_kv": 513, "D": 64},
+      "attributes": {"scale": 0.125, "causal": true, "window_left": -1, "window_right": -1},
+      "distribution": "normal",
+      "expected_path": "custom_fallback",
+      "library_gap": {
+        "reason": "semantic_mismatch",
+        "expected_path": "custom_fallback",
+        "evidence": "replace with the target-device comparison and trace"
+      }
+    },
+    {
+      "case_id": "hidden_perf_001",
+      "role": "perf",
+      "tag": "perf",
+      "seed": 90004,
+      "dtype": "float16",
+      "shape": {"B": 4, "H_q": 16, "H_kv": 16, "S_q": 512, "S_kv": 512, "D": 64},
+      "attributes": {"scale": 0.125, "causal": false, "window_left": -1, "window_right": -1},
+      "distribution": "normal",
+      "expected_path": "fused_library"
+    }
+  ],
+  "generalization_probe": {
+    "generator": "musa_operator_eval/evaluator/generalization_probe.py",
+    "seed_source": "runtime_entropy",
+    "count": 1,
+    "dtype_choices": ["float16", "bfloat16"],
+    "shape_space": {
+      "B": {"choices": [1, 2]},
+      "H_q": {"choices": [4, 8]},
+      "H_kv": {"choices": [2, 4]},
+      "S_q": {"minimum": 160, "maximum": 384, "step": 16},
+      "S_kv": {"minimum": 160, "maximum": 384, "step": 16},
+      "D": {"choices": [64, 96, 128]}
+    },
+    "template": {
+      "attributes": {"scale": 0.125, "causal": false, "window_left": -1, "window_right": -1},
+      "distribution": "normal"
+    },
+    "expected_path_rules": [
+      {"when": {"D": {"maximum": 128}}, "path": "fused_library"},
+      {"path": "library_composition"}
+    ]
+  }
 }

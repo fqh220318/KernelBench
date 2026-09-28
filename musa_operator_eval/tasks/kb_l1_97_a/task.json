@@ -9,6 +9,10 @@
     "project": "KernelBench problem set",
     "problem": "KernelBench/level1/97_ScaledDotProductAttention.py",
     "record": "sources/attention-source-001.json",
+    "revision": "06e49e8781b13acdb68b102b3c9c864bd9454db3",
+    "license": "MIT",
+    "snapshot_location": "KernelBench/level1/97_ScaledDotProductAttention.py",
+    "snapshot_revision": "8d037710795d00fb23b58a8d43d033ea8f44038e",
     "note": "The A-tier reference is the KernelBench problem itself; this package adds the contract around it rather than redefining it."
   },
   "target_environment": {

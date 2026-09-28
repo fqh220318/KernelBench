@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.0.0",
+  "task_id": "replace_with_task_id",
+  "tier": "A_kernel",
+  "environment_snapshot": "replace-with-snapshot-id",
+  "measurement_protocol": {
+    "timer": "cuda_event",
+    "warmup": 3,
+    "measurements": 100,
+    "discard_first": 1,
+    "statistic": "mean",
+    "cache": "cold",
+    "rounds": 1,
+    "source": "kernelbench.timing.time_execution_with_cuda_event"
+  },
+  "weight_alignment": "re-seed and rebuild, as kernelbench.eval does; no state dict is copied",
+  "tolerance_source": "kernelbench.eval.resolve_tolerance",
+  "implementations": [
+    "upstream_musa",
+    "mudnn_fused",
+    "torch_musa_sdpa",
+    "torch_musa_eager"
+  ],
+  "results": [],
+  "readiness": {
+    "status": "incomplete",
+    "required_roles": [
+      "upstream_musa",
+      "mudnn_fused",
+      "torch_musa_sdpa",
+      "torch_musa_eager"
+    ],
+    "case_count": 0,
+    "missing_roles": [],
+    "missing_rows": [],
+    "duplicate_rows": [],
+    "unavailable_rows": [],
+    "nonpassing_rows": [],
+    "problems": [
+      "the baseline contains no measured case"
+    ]
+  },
+  "scoring": {
+    "speedup_denominator": "upstream_musa",
+    "reference_implementation": "torch_musa_eager",
+    "correctness_gate": "all_hidden_cases"
+  }
+}

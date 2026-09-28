@@ -10,10 +10,12 @@ the guide asks:
 
   * every gap names a reason from §4.3's fixed vocabulary, and the reasons a
     task's contract requires must actually appear;
-  * a task is allowed one reason category only if its contract says so, which is
-    the `admission.gap_reason_coverage` field rather than a silent pass;
-  * there is at least one performance case and at least one generalisation probe,
-    because a set of gaps alone measures coverage and not speed;
+  * at least two gap-reason categories are present; a task that cannot reach the
+    floor remains blocked rather than turning the requirement into a waiver;
+  * there is at least one performance case, because a set of gaps alone measures
+    coverage and not speed;
+  * the exact generalisation probe is absent from the plan: only its sampling
+    policy is recorded, and the evaluator realizes an unlisted shape at runtime;
   * no hidden shape repeats a public one, so a submission cannot pass the hidden
     set by passing the public one.
 
@@ -27,7 +29,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
+
+EVALUATOR_DIR = Path(__file__).resolve().parent
+if str(EVALUATOR_DIR) not in sys.path:
+    sys.path.insert(0, str(EVALUATOR_DIR))
+
+from generalization_probe import validate_policy  # noqa: E402
 
 # `generate_cases.py` writes a case to `<output-dir>/<case_id>/{input,golden}/`,
 # so a `golden` field is that path relative to `<output-dir>`. The two tools are
@@ -48,7 +57,7 @@ CASE_GENERATION_TOOL = "musa_operator_eval/tools/generate_cases.py"
 GAP_REASONS = frozenset({"unsupported_shape", "semantic_mismatch", "layout_mismatch", "multi_operator_required"})
 
 # §4.3's fixed tag vocabulary, shared with the public list.
-CASE_TAGS = frozenset({"smoke", "correctness", "boundary", "non_aligned", "extreme", "perf", "generalization"})
+CASE_TAGS = frozenset({"smoke", "correctness", "boundary", "non_aligned", "extreme", "perf"})
 
 MINIMUM_GAP_CASES = 3
 
@@ -56,7 +65,6 @@ MINIMUM_GAP_CASES = 3
 REQUIRED_ROLES = {
     "gap": "a gap is what distinguishes a submission that probes from one that assumes",
     "perf": "a set of gaps alone cannot measure speedup, and the gate is a speedup ratio",
-    "probe": "a probe is a shape in no list, which is what catches a submission that memorised the lists",
 }
 
 
@@ -68,7 +76,7 @@ def load_plan(evidence: dict) -> list:
     return cases
 
 
-def check_plan(plan: list, task: dict) -> list:
+def check_plan(plan: list, task: dict, generalization_probe: dict | None = None) -> list:
     """Everything that would make the manifest say something untrue."""
     problems = []
 
@@ -79,6 +87,12 @@ def check_plan(plan: list, task: dict) -> list:
     for role, why in REQUIRED_ROLES.items():
         if not roles.get(role):
             problems.append(f"the plan has no {role} case, and {why}")
+
+    if any(case.get("role") == "probe" or case.get("tag") == "generalization" for case in plan):
+        problems.append(
+            "the generalization probe must not be a listed case; provide a runtime sampling policy instead"
+        )
+    problems.extend(validate_policy(generalization_probe, task.get("tier")))
 
     for case in plan:
         tag = case.get("tag")
@@ -106,17 +120,12 @@ def check_plan(plan: list, task: dict) -> list:
             f"the plan has {len(roles.get('gap', []))} gaps where §4.3 asks for at least {MINIMUM_GAP_CASES}"
         )
 
-    # §4.3 asks for at least two reason categories, and most entry-scoped tasks
-    # cannot reach two: a task whose reference fixes its scale, has no window and
-    # is causal has exactly one library boundary to find. That is a real property
-    # of the task rather than a gap in the plan, so it is allowed -- but only when
-    # the contract says so and says why, which is what `gap_reason_coverage` is.
-    coverage = (task.get("admission") or {}).get("gap_reason_coverage") or {}
-    if len(gap_reasons) < 2 and coverage.get("state") != "open":
+    # This is a floor, not a documentation preference. A contract may record why
+    # it is blocked, but that record cannot make a one-category hidden set valid.
+    if len(gap_reasons) < 2:
         problems.append(
-            f"the gaps cover {len(gap_reasons)} reason category where §4.3 asks for at least 2, "
-            "and the contract does not record that this task cannot reach a second under "
-            "`admission.gap_reason_coverage`"
+            f"the gaps cover {len(gap_reasons)} reason category where §4.3 requires at least 2; "
+            "the task must remain blocked until a second measured category exists"
         )
 
     # A reason the contract requires but the plan never produces is a promise the
@@ -140,7 +149,7 @@ def check_plan(plan: list, task: dict) -> list:
     return problems
 
 
-def build_manifest(plan: list, task: dict) -> dict:
+def build_manifest(plan: list, task: dict, generalization_probe: dict | None = None) -> dict:
     cases = []
     for case in plan:
         stamped = dict(case)
@@ -159,6 +168,7 @@ def build_manifest(plan: list, task: dict) -> dict:
             "note": "A private list hides which configuration is a library gap; that is the case the task exists to make the submission discover.",
         },
         "cases": cases,
+        "generalization_probe": generalization_probe,
     }
 
 
@@ -175,6 +185,7 @@ def main() -> int:
     task["_public_cases"] = json.loads(public.read_text(encoding="utf-8"))["cases"] if public.is_file() else []
 
     evidence = json.loads(args.evidence.read_text(encoding="utf-8"))
+    generalization_probe = evidence.get("generalization_probe")
     declared_snapshot = evidence.get("environment_snapshot")
     if declared_snapshot and declared_snapshot != task["target_environment"]["snapshot_id"]:
         print(
@@ -185,14 +196,14 @@ def main() -> int:
         return 2
 
     plan = load_plan(evidence)
-    problems = check_plan(plan, task)
+    problems = check_plan(plan, task, generalization_probe)
     if problems:
         for problem in problems:
             print(f"  - {problem}")
         print(f"refusing to build {task['id']}: {len(problems)} problem(s) in the plan")
         return 1
 
-    manifest = build_manifest(plan, task)
+    manifest = build_manifest(plan, task, generalization_probe)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(args.output)

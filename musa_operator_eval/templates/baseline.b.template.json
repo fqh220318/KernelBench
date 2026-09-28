@@ -1,8 +1,8 @@
 {
   "schema_version": "1.0.0",
-  "task_id": "REPLACE_WITH_TASK_ID",
+  "task_id": "replace_with_task_id",
   "tier": "B_library",
-  "environment_snapshot": "REPLACE_WITH_SNAPSHOT_ID",
+  "environment_snapshot": "replace-with-snapshot-id",
   "measurement_protocol": {
     "timer": "cuda_event",
     "warmup": 3,
@@ -16,14 +16,34 @@
   "weight_alignment": "re-seed and rebuild, as kernelbench.eval does; no state dict is copied",
   "tolerance_source": "kernelbench.eval.resolve_tolerance",
   "implementations": [
-    "expert_dispatch",
+    "upstream_musa",
     "mudnn_fused",
-    "naive_library_composition",
-    "reference_model",
+    "torch_musa_sdpa",
     "torch_musa_eager",
-    "upstream_musa"
+    "naive_library_composition",
+    "expert_dispatch"
   ],
   "results": [],
+  "readiness": {
+    "status": "incomplete",
+    "required_roles": [
+      "upstream_musa",
+      "mudnn_fused",
+      "torch_musa_sdpa",
+      "torch_musa_eager",
+      "naive_library_composition",
+      "expert_dispatch"
+    ],
+    "case_count": 0,
+    "missing_roles": [],
+    "missing_rows": [],
+    "duplicate_rows": [],
+    "unavailable_rows": [],
+    "nonpassing_rows": [],
+    "problems": [
+      "the baseline contains no measured case"
+    ]
+  },
   "scoring": {
     "speedup_denominator": "expert_dispatch",
     "reference_implementation": "naive_library_composition",

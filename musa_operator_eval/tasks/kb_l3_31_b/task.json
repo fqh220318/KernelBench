@@ -9,6 +9,10 @@
     "project": "KernelBench problem set",
     "problem": "KernelBench/level3/31_VisionAttention.py",
     "record": "sources/attention-source-001.json",
+    "revision": "6b1cea28ddea79af6b295fb9a3e3413f393efe3d",
+    "license": "MIT",
+    "snapshot_location": "KernelBench/level3/31_VisionAttention.py",
+    "snapshot_revision": "8d037710795d00fb23b58a8d43d033ea8f44038e",
     "note": "The reference is the KernelBench problem; the dispatch contract around it is what this tier adds."
   },
   "target_environment": {
@@ -106,14 +110,14 @@
     "ranking": "B-library track only; never merged or averaged with the A-kernel track"
   },
   "admission": {
-    "status": "measured",
-    "decision": "admit",
+    "status": "blocked_gap_coverage",
     "measured_geometric_mean": 1.7116607734609492,
     "threshold": 1.3,
     "measured_in": "musa-5f9d7b9dd1233a68",
+    "reason": "Not scoreable: the measured hidden gaps cover only unsupported_shape, while §4.3 requires at least two reason categories. The performance measurement is retained as historical evidence and is not an admission decision.",
     "dispatch_note": "the problem is already written against a framework attention module, so the library path is the reference's own route",
     "gap_reason_coverage": {
-      "state": "open",
+      "state": "blocked",
       "reachable": [
         "unsupported_shape"
       ],

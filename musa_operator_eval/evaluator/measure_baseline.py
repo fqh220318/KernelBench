@@ -1,4 +1,4 @@
-"""Measure the B-tier baseline implementations and emit the admission gate's input.
+"""Measure the mandatory A/B baseline roster and emit the scoring record.
 
 The gate compares `naive_library_composition` against `expert_dispatch` per case
 and takes the geometric mean, so both have to be measured with the same protocol
@@ -38,7 +38,9 @@ approximation under a real implementation's name is worse than a gap.
         --task-dir musa_operator_eval/tasks/kb_l3_43_b \
         --naive  musa_operator_eval/private/mingpt_causal_attention_b_v0/naive/model_new.py \
         --expert musa_operator_eval/private/mingpt_causal_attention_b_v0/expert/model_new.py \
-        --unavailable musa_operator_eval/private/mingpt_causal_attention_b_v0/unavailable.json \
+        --implementation upstream_musa=<module.py> \
+        --implementation mudnn_fused=<module.py> \
+        --implementation torch_musa_sdpa=<module.py> \
         --output musa_operator_eval/private/mingpt_causal_attention_b_v0/baseline.hidden.json
 """
 
@@ -55,6 +57,8 @@ import torch
 import torch_musa  # noqa: F401
 
 from run_task import case_source, load_task
+from baseline_readiness import assess as assess_baseline_readiness
+from baseline_readiness import required_roles
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO_TOP = ROOT.parent
@@ -103,6 +107,7 @@ BACKEND = "musa"
 # paths and two are usually absent; keeping the names here is what lets a reader
 # line the two files up.
 REFERENCE_ROLE = "reference_model"
+EAGER_ROLE = "torch_musa_eager"
 NAIVE_ROLE = "naive_library_composition"
 BLIND_ROLE = "torch_musa_sdpa"
 EXPERT_ROLE = "expert_dispatch"
@@ -179,7 +184,30 @@ def load_model_class(path: Path):
 def load_unavailable(path):
     if path is None:
         return {}
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    value = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(value, dict) or any(
+        not isinstance(role, str) or not role or not isinstance(reason, str) or not reason.strip()
+        for role, reason in value.items()
+    ):
+        raise ValueError("--unavailable must be a JSON object of non-empty role/reason strings")
+    return value
+
+
+def load_supplied_implementations(specifications, unavailable):
+    """Resolve repeatable role paths without silently duplicating a roster row."""
+    implementations = {}
+    for role, path, note in specifications or []:
+        if role == EAGER_ROLE:
+            raise ValueError(
+                f"{EAGER_ROLE} is measured automatically from the task reference and must not be supplied"
+            )
+        if role in implementations or role in unavailable:
+            raise ValueError(f"baseline role {role!r} was supplied more than once")
+        if path.is_file():
+            implementations[role] = load_model_class(path)
+        else:
+            unavailable[role] = note or f"no implementation at {path}"
+    return implementations
 
 
 # ----------------------------------------------------------------------------
@@ -348,7 +376,10 @@ def measure_case(case, task, problem_source, implementations: dict, unavailable:
     # The reference is rebuilt per case by `load_case`, so its own cost is the
     # cost of a fresh model at this case's shapes. Measured for scale: it is the
     # number a submission is being asked to beat by a library call.
-    rows = [_measure_existing(REFERENCE_ROLE, reference, inputs, expected, tolerance)]
+    # The reference is plain PyTorch/torch_musa eager execution, which is the
+    # required §4.4 roster entry. Record it under that canonical role instead of
+    # an internal alias so completeness is machine-checkable.
+    rows = [_measure_existing(EAGER_ROLE, reference, inputs, expected, tolerance)]
     expected_path = case.get("expected_path")
     required_fields = (task.get("library_policy") or {}).get("required_trace_fields")
     for name, model_class in implementations.items():
@@ -408,7 +439,10 @@ def main() -> int:
         type=parse_implementation,
         default=None,
         metavar="ROLE=PATH",
-        help="an implementation to measure under this role; repeatable. Required for the A tier.",
+        help=(
+            "an implementation to measure under this role; repeatable. Use it for the A roster and "
+            "for the B tier's upstream_musa, mudnn_fused and torch_musa_sdpa entries"
+        ),
     )
     args = parser.parse_args()
 
@@ -421,6 +455,20 @@ def main() -> int:
 
     task, cases_manifest, problem_source = load_task(args.task_dir, args.cases)
 
+    if task.get("tier") != args.tier:
+        print(
+            f"[baseline] --tier {args.tier} does not match task tier {task.get('tier')}",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        unavailable = dict(load_unavailable(args.unavailable))
+        implementations = load_supplied_implementations(args.implementation, unavailable)
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        print(f"[baseline] {error}", file=sys.stderr)
+        return 2
+
     if args.tier == "A_kernel":
         # §4.4's A tier: the upstream implementation is the speedup denominator and
         # the library paths are reference points beside it. The roster is supplied
@@ -431,13 +479,6 @@ def main() -> int:
         # are read here, because reading only the first one meant a run that passed
         # `--unavailable` recorded no unavailable rows at all -- silently, and with a
         # record that looked complete.
-        implementations = {}
-        unavailable = dict(load_unavailable(args.unavailable))
-        for role, path, note in args.implementation or []:
-            if path.is_file():
-                implementations[role] = load_model_class(path)
-            elif role not in unavailable:
-                unavailable[role] = note or f"no implementation at {path}"
         if not implementations:
             print("[baseline] the A tier needs at least one --implementation ROLE=PATH", file=sys.stderr)
             return 2
@@ -446,10 +487,33 @@ def main() -> int:
         if missing:
             print(f"[baseline] the B tier measures against {', '.join(missing)}", file=sys.stderr)
             return 2
-        implementations = {NAIVE_ROLE: load_model_class(args.naive), EXPERT_ROLE: load_model_class(args.expert)}
+        owned_roles = {NAIVE_ROLE, EXPERT_ROLE}
+        if args.blind is not None:
+            owned_roles.add(BLIND_ROLE)
+        conflicts = sorted(owned_roles & (set(implementations) | set(unavailable)))
+        if conflicts:
+            print(
+                "[baseline] named B-tier flags own these roles; remove duplicate --implementation/"
+                f"--unavailable entries: {conflicts}",
+                file=sys.stderr,
+            )
+            return 2
+        implementations.update(
+            {NAIVE_ROLE: load_model_class(args.naive), EXPERT_ROLE: load_model_class(args.expert)}
+        )
         if args.blind is not None:
             implementations[BLIND_ROLE] = load_model_class(args.blind)
-        unavailable = load_unavailable(args.unavailable)
+
+    required = set(required_roles(args.tier))
+    supplied = set(implementations) | set(unavailable) | {EAGER_ROLE}
+    missing_roster = sorted(required - supplied)
+    if missing_roster:
+        print(
+            "[baseline] every §4.4 role must be supplied by an implementation path or "
+            f"an explicit --unavailable reason; missing {missing_roster}",
+            file=sys.stderr,
+        )
+        return 2
 
     snapshot_id = args.snapshot_id or task["target_environment"]["snapshot_id"]
 
@@ -493,13 +557,13 @@ def main() -> int:
         "scoring": (
             {
                 "speedup_denominator": UPSTREAM_ROLE,
-                "reference_implementation": REFERENCE_ROLE,
+                "reference_implementation": EAGER_ROLE,
                 "correctness_gate": "all_hidden_cases",
                 # §4.4 lists torch_musa eager as its own entry and asks it only to
                 # cross-check semantics. On this tier the reference model *is* plain
                 # PyTorch run eagerly, so the same measurement answers both and a
                 # second row under a second name would be the same numbers twice.
-                "torch_musa_eager": "the reference model: this tier's reference is plain PyTorch evaluated eagerly",
+                "torch_musa_eager": "measured directly as the task reference under the canonical eager role",
             }
             if args.tier == "A_kernel"
             else {
@@ -510,9 +574,13 @@ def main() -> int:
             }
         ),
     }
+    payload["readiness"] = assess_baseline_readiness(payload)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(args.output)
+    if payload["readiness"]["status"] != "complete":
+        print("[baseline] record written but mandatory roster is incomplete; it cannot be gated or ranked", file=sys.stderr)
+        return 3
     return 0
 
 

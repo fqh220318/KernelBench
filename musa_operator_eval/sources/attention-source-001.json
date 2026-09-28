@@ -2,7 +2,22 @@
   "schema_version": "1.0.0",
   "source_id": "attention-source-001",
   "visibility": "maintainer_only",
+  "archive": {
+    "repository": "https://github.com/Young-Lord/KernelBench.git",
+    "branch": "feat/import-musa-attention-set-useless",
+    "revision": "f249b2fcbddc9d9fb13183437ace87d280a02cca",
+    "path": "musa_attention_set",
+    "note": "The branch name records history only; verification is pinned to the immutable full revision."
+  },
   "entries": [
+    {
+      "project": "KernelBench",
+      "revision": "8d037710795d00fb23b58a8d43d033ea8f44038e",
+      "revision_label": "musa-operator-evaluation-v0-base",
+      "license": "MIT",
+      "snapshot": "../..",
+      "role": "reference problems, in-repository MUSA answers, and evaluation framework"
+    },
     {
       "project": "torch_musa",
       "revision": "246d43e3525a9102162cbebfb25c067d634d95a2",

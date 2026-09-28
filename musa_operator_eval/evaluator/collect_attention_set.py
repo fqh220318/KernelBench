@@ -478,7 +478,12 @@ def render_index(manifest: dict, facts: List[dict], dangling: List[dict], level1
         a_tier = entry["tier"]["A_kernel"]
         b_tier = entry["tier"]["B_library"]
         a_mark = "有答案" if a_tier.get("eligible") else "不计分"
-        b_mark = "可判分" if b_tier.get("eligible") else "不计分"
+        if not b_tier.get("eligible"):
+            b_mark = "不适用"
+        elif b_tier.get("scoreable") is False:
+            b_mark = "阻塞"
+        else:
+            b_mark = "可判分"
         tuned = [
             measurement for measurement in entry_facts.get("measurements", [])
             if measurement["role"] == "a_tier_tuned"

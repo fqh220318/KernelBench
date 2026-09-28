@@ -67,19 +67,23 @@ two tiers of one entry share one semantic contract byte for byte, which
 
 ## §4.3 Case lists
 
-Public: 3 smoke cases per package with golden paths recorded. Hidden: 4–10 cases per
-package, private, covering correctness, boundary, non-aligned, extreme, performance
-and a generalisation probe, with seeds disjoint from the public list and no repeated
-shape. Cases carry parameters and seeds, not tensors; the generator is
-`tools/generate_cases.py`.
+Public: 3 smoke cases per package with golden paths recorded. Hidden cases are
+private and cover correctness, boundary, non-aligned, extreme and performance,
+with seeds disjoint from the public list and no repeated shape. The
+generalisation probe is not stored in either list: a private policy realizes it
+after evaluation starts, and the report records the replay seed. Cases carry
+parameters and seeds, not tensors; the generator is `tools/generate_cases.py`.
 
-**Shortfall, stated and argued.** §4.3 asks a B-tier hidden set to reach at least two
+**Shortfall, now a hard blocker.** §4.3 asks a B-tier hidden set to reach at least two
 library-gap reasons. Four of the five B packages reach one (`unsupported_shape`); the
 pilot reaches two (`unsupported_shape` and `semantic_mismatch`). Inventing a second
 gap would mean grading a configuration the library actually serves.
 
-The shortfall is not an omission, and it is now enforced rather than merely written
-down: `private/<task id>/private_gap_evidence.json` carries an
+The four entry-scoped packages are therefore `blocked_gap_coverage`, not admitted
+or scoreable. Their old performance numbers remain historical evidence only.
+`make_private_manifest.py`, `record_admission.py`, the release packager, both
+evaluation drivers and `rank.py` refuse to turn that evidence into a score. The
+attention-set ledger also records `scoreable: false`. The private evidence carries an
 `exactly_one_reason_category` block whose `why_the_others_are_out_of_reach` accounts
 for every category the vocabulary has and is not reached, and
 `tests/test_private_assets.py::GapCoverageTests` fails if a single-category task has
@@ -123,11 +127,21 @@ report row and every report now records the `tolerance_used`.
 
 ## §4.4 Baselines
 
-Every package has `private/<task id>/baseline.hidden.json` measured on the target
-environment, with the machine fingerprint, the measurement protocol, per-case
-latency, `p10`/`p90`, throughput, peak memory and status, and a `scoring` block
-naming the denominator: `upstream_musa` for the A tier, `expert_dispatch` for the B
-tier.
+The schema and collector now make the complete roster mechanical. Every hidden
+case must have exactly one usable row for all four A roles (`upstream_musa`,
+`mudnn_fused`, `torch_musa_sdpa`, `torch_musa_eager`) or all six B roles (those
+four plus `naive_library_composition` and `expert_dispatch`). A row may honestly
+record `unavailable` with a reason, but that is evidence of a missing baseline,
+not a completed measurement. The derived `readiness` block therefore remains
+`incomplete`, and the admission gate, admission recorder and ranker refuse it.
+
+This public checkout deliberately does not contain the maintainer tree. The
+redacted `collection/baseline_collection_plan.json` currently reports 11/11
+records as `not_collected` here: seven are release blockers (six A tasks and the
+admitted family B pilot), while four entry-scoped B tasks are collected only
+after their separate §4.3 gap-coverage blocker is resolved. This is an inventory
+of work still requiring the private mount and target device, not a claim that
+the measurements are complete.
 
 **One protocol, and it is the framework's.** A baseline's `latency_ms` is a denominator
 and a `run_task.py` report's `runtime` is a numerator, so the two have to be the same
@@ -148,8 +162,21 @@ round described a structure it does not have), and `latency_ms_stats` keeps the 
 the mean came from. `tests/test_private_assets.py` fails if a record does not name that
 loop or if its number is not the mean of its own samples.
 
-The A tier's roster is unchanged: upstream implementation plus `reference_model`, with
-the library paths recorded as `unavailable` for the reason that tier has.
+**Remaining protocol deviation.** The guide literally names repeated rounds and
+a median in the minimum protocol record. KernelBench's scored runtime is one
+cold-cache trial sequence summarized by its mean, so this implementation keeps
+the baseline denominator on that same protocol instead of silently comparing a
+median-of-rounds denominator with a mean numerator. The samples and p10/p90 are
+retained, but the median/repeated-round wording is not yet satisfied. Resolving
+it requires changing both submission timing and baseline timing together and
+re-measuring on hardware; it is not safe to change the denominator alone.
+
+`measure_baseline.py` records the task reference under the canonical
+`torch_musa_eager` role and accepts repeatable `--implementation ROLE=PATH`
+arguments in both tiers. The B command previously accepted only naive/expert (and
+an optional SDPA shortcut), so it was impossible for that command to produce the
+required six-role record. That interface defect is fixed; every non-eager role
+can now be backed by a real model-level implementation.
 
 The numbers moved when the protocol did, most of all on the small shapes where a flushed
 cache costs the most, and no decision moved with them:
@@ -162,8 +189,12 @@ cache costs the most, and no decision moved with them:
 | `mingpt_block_b_v0` | 2.190 | 2.124 |
 | `sdpa_forward_b_v0` (the pilot) | 7.811 | 6.152 |
 
-**Shortfall, stated.** Not every roster entry could be built honestly here, and each
-gap now carries the measurement that produced it rather than a claim about the tier.
+**Historical evidence, not current completion.** Earlier maintainer-side records
+measured useful rows, but they predate the strict readiness contract and include
+required roles marked `unavailable`. When mounted, the inventory will classify
+those records as incomplete until they are re-collected with the complete roster.
+The observations below remain useful explanations of the backlog; they are not
+accepted as scoreable baselines.
 
 The A tier records `mudnn_fused` as `unavailable` for one measured reason: this tier is
 graded at float32, and `musa::dnn::ScaledDotProductAttention::RunFlash` refuses it with
@@ -195,9 +226,11 @@ what a hidden set outside the public range is for.
 
 The B tier's gate (naive-to-expert ratio, geometric mean, floor 1.3) is re-measured
 and re-recorded by `measure_baseline.py` → `candidate_gate.py` →
-`record_admission.py`. All five admitted packages reproduce their decisions; the
-per-case evidence lives in `private/<task id>/admission.json` and the contract keeps
-the outcome only, because §2 hands the contract to the agent.
+`record_admission.py`. The family-scoped pilot meets the two-category prerequisite
+and remains admitted. The four entry-scoped measurements pass the performance gate
+but no longer claim admission because their hidden sets do not meet §4.3. Per-case
+evidence lives in `private/<task id>/admission.json` and the contract keeps only the
+summary, because §2 hands the contract to the agent.
 
 ## §4.5 Prompts
 
@@ -353,8 +386,8 @@ declared two.
 
 ## §4.7 Evaluator
 
-Nine stages, short-circuiting, named exit codes: environment, case generation, build,
-static audit, link whitelist (B only), dispatch trace (B only, per case), correctness
+Nine stages, short-circuiting, named exit codes: environment, case generation, static
+audit, build, link whitelist (B only), dispatch trace (B only, per case), correctness
 with the stability re-run, performance, summary. `run_task.py` reports the stages it
 ran; a stage that fails is not followed by the next one, which the device runs show
 as `skipped` rows.
@@ -368,6 +401,18 @@ the linked `runner` itself (`libmusart.so.1.0`, `libmusa.so.1.0`, `libmudnn.so.2
 plus plumbing, 69 undefined and 10 defined symbols) — which is the first time this
 stage has had a real B-tier artifact to check rather than "no compiled artifact was
 produced".
+
+**Compiled sub-stage short-circuit, corrected.** The compiled driver formerly ran
+every case in one flat loop and chose an exit code afterward. A correctness failure
+therefore did not stop boundary or performance cases, despite the top-level report
+claiming the same pipeline as the Python path. Both paths now derive the stage from
+the fixed case tag vocabulary, execute `correctness → boundary → stability →
+performance` regardless of manifest list order, finish all cases in the current
+stage, and emit explicit skipped rows for every later stage. This also fixes the
+runtime generalisation probe: it is appended to the manifest after materialisation,
+but is moved back into correctness instead of accidentally running after performance.
+Compiled reports carry an `evaluation_stages` status list, and the exit code comes
+from the first failed stage (with dispatch-trace and stability codes retained).
 
 The link check parses the build products' dynamic sections with no dependency beyond
 the standard library, and was checked against `readelf -d` and `nm -D` on six real
@@ -433,19 +478,23 @@ cover it, including that a suffixless executable is checked and its libraries re
 
 ## §4.8 Schema validation
 
-Six schemas, versioned, validated by value with the tier rules. `validate_schemas.py
---all` reports 68/68 valid on the maintainer tree and 34/34 on a checkout with
-`private/` emptied, and all thirteen test files pass in both: the ones that read
-maintainer assets -- the hidden lists, the baselines and the gap evidence -- skip
-there (`test_private_assets` runs 19 tests, 8 skipped) rather than failing, which is
-what a checkout without those files should report.
+Six schemas, versioned, validated by value with the tier rules. In this public
+checkout, `validate_schemas.py --all --engine stdlib` reports 36/36 valid (the
+two baseline templates are included in discovery rather than treated as prose).
+Maintainer-side baselines now require a derived readiness record and the complete
+§4.4 roster, so the earlier 68/68 device-tree result is historical and must not be
+reused: after mounting `private/`, regenerate the collection inventory and run
+validation again. Tests that require the maintainer tree skip when it is absent;
+the public checkout's private-asset module currently reports 15 passed and 11
+skipped.
 
 ## §5 Build steps
 
-Environment fixed and compared before grading; sources recorded; semantics extracted
-per family with an independent CPU oracle for the family that has one; contracts and
-prompts written per tier; cases generated per tier; one interface per tier; baselines
-measured and gated; the evaluator assembled and the tracks kept separate.
+Environment comparison, source provenance, per-family semantics, tiered contracts,
+public case generation, evaluator assembly and separate tracks are implemented.
+True §4.4 baseline completion is still pending the private mount and target device:
+the redacted inventory reports 11 `not_collected` records in this checkout, and no
+ranking is current until those records are complete under the new readiness gate.
 
 **Met.** §5 step 8's "separately split, separately ranked" is enforced in two places:
 the scoring blocks and case lists never mix tiers, and `evaluator/rank.py` produces
@@ -460,16 +509,17 @@ rather than between two protocols. The unit is the one the baseline is in: the
 framework's dataclass comment says microseconds and the recorded values say otherwise,
 so `HARDWARE_RUNBOOK.md` records the trap.
 
-The device readings, each against the baseline measured the framework's way:
+Historical device readings from before the strict roster/readiness migration
+(diagnostic evidence only; they are not a current leaderboard):
 
 | report | ratio | cases compared |
 |---|---|---|
 | A tier: the worked compiled kernel (fp32, steady state) | `x0.05306` | 2 of 9 |
-| B tier: the five Python experts | `x0.99586` to `x1.00842` | 48 of 48 |
-| B tier: the compiled level-1 answer | `x0.08565` | 10 of 10 |
-| B tier: the compiled causal-attention answer (`kb_l3_43_b`) | `x0.12306` | 10 of 10 |
-| B tier: the compiled transformer-block answer (`kb_l3_44_b`) | `x0.16590` | 10 of 10 |
-| B tier: the compiled ViT-attention answer (`kb_l3_31_b`) | `x0.24325` | 10 of 10 |
+| B tier: historical entry-scoped Python/compiled runs | excluded | blocked by the two-category prerequisite |
+
+The removed B rows remain useful device diagnostics, but `rank.py` now requires a
+`task_admission` snapshot of `measured/admit`; a blocked or legacy report cannot
+enter either ranking table.
 
 The compiled answers sit four to twelve times behind their Python counterparts, and the
 gap is the form rather than the dispatch decision: the Python path is handed device
@@ -477,10 +527,10 @@ tensors and hands them to one library call, while a compiled submission is hande
 bytes, copies them up itself, and pays for the layout changes (`Permute`) that the
 framework's own bindings do invisibly. The ABI's host-to-device copies are inside the
 timed region by design, which is why a compiled case is only ever ranked against another
-compiled case -- the four rows above are comparable with each other and with the compiled
-A-tier row, and the Python experts' rows are comparable with theirs.
+compiled case. That explains the historical measurements, but does not override
+the gap-coverage prerequisite that now excludes the four entry-scoped B tasks.
 
-Three readings from that session are worth keeping. A B-tier Python report now lands
+Three historical readings from that session are worth keeping as diagnostics. A B-tier Python report now lands
 within 0.4% of its own baseline, because the report and the baseline are the same
 expert measured by the same loop; the same comparison read `x0.9112` and `x0.892` while
 the two sides were measured differently, and that nearness to 1 was luck rather than a

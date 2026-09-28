@@ -1,7 +1,7 @@
 """§2's publication audit: what the agent is handed holds task definitions only.
 
 §2 splits the evaluation set in two. The task package is handed over; the raw
-source snapshot, the hidden cases, the golden tensors, the official baselines and
+source snapshot, the hidden cases, the hidden golden tensors, the official baselines and
 the expert dispatch are not. §3 puts the package in `tasks/<id>/` and everything
 withheld outside it.
 
@@ -20,6 +20,7 @@ is silent on its own:
 
     python musa_operator_eval/evaluator/audit_agent_package.py
     python musa_operator_eval/evaluator/audit_agent_package.py musa_operator_eval/tasks/kb_l3_43_b
+    python musa_operator_eval/evaluator/audit_agent_package.py --require-public-data <release-package>
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ MAINTAINER_ONLY_NAMES = {
     "environment.snapshot.json",
 }
 
-MAINTAINER_ONLY_DIRS = {"expert", "naive", "blind", "golden"}
+MAINTAINER_ONLY_DIRS = {"expert", "naive", "blind"}
 
 # A package file that mentions the maintainer tree tells a reader where the
 # answers live, even if it does not contain them.
@@ -72,7 +73,17 @@ def _text_files(package_dir: Path) -> List[Path]:
     )
 
 
-def audit_package(package_dir: Path) -> Dict[str, object]:
+def _public_case_ids(package_dir: Path) -> set:
+    manifest = json.loads((package_dir / "public_cases.json").read_text(encoding="utf-8"))
+    return {case["case_id"] for case in manifest["cases"]}
+
+
+def _is_public_golden(relative: Path, public_case_ids: set) -> bool:
+    parts = relative.parts
+    return len(parts) >= 4 and parts[0] == "generated" and parts[1] in public_case_ids and parts[2] == "golden"
+
+
+def audit_package(package_dir: Path, require_public_data: bool = False) -> Dict[str, object]:
     """Check one task package against §2 and §4.6.
 
     Returns:
@@ -83,15 +94,32 @@ def audit_package(package_dir: Path) -> Dict[str, object]:
     task_path = package_dir / "task.json"
     task = json.loads(task_path.read_text(encoding="utf-8"))
     starter = task.get("starter") or {}
+    public_case_ids = _public_case_ids(package_dir)
 
     for path in sorted(package_dir.rglob("*")):
         if not path.is_file() or "__pycache__" in path.parts:
             continue
-        relative = path.relative_to(package_dir).as_posix()
+        relative_path = path.relative_to(package_dir)
+        relative = relative_path.as_posix()
         if path.name in MAINTAINER_ONLY_NAMES:
             findings.append(f"{relative}: a maintainer-only file is inside the agent-visible package")
-        if set(path.relative_to(package_dir).parts[:-1]) & MAINTAINER_ONLY_DIRS:
+        if set(relative_path.parts[:-1]) & MAINTAINER_ONLY_DIRS:
             findings.append(f"{relative}: it lives in a maintainer-only directory")
+        if "golden" in relative_path.parts[:-1] and not _is_public_golden(relative_path, public_case_ids):
+            findings.append(f"{relative}: a golden outside a declared public case is maintainer-only")
+        if relative_path.parts and relative_path.parts[0] == "generated":
+            if len(relative_path.parts) < 2 or relative_path.parts[1] not in public_case_ids:
+                findings.append(f"{relative}: generated data belongs to no declared public case")
+
+    if require_public_data:
+        for case_id in sorted(public_case_ids):
+            case_root = package_dir / "generated" / case_id
+            for direction in ("input", "golden"):
+                manifest = case_root / direction / "tensors.json"
+                if not manifest.is_file():
+                    findings.append(
+                        f"generated/{case_id}/{direction}/tensors.json: required public self-test data is missing"
+                    )
 
     for path in _text_files(package_dir):
         relative = path.relative_to(package_dir).as_posix()
@@ -121,9 +149,9 @@ def audit_package(package_dir: Path) -> Dict[str, object]:
     return {"package": str(package_dir), "passed": not findings, "findings": findings}
 
 
-def audit_packages(packages: List[Path]) -> Dict[str, object]:
+def audit_packages(packages: List[Path], require_public_data: bool = False) -> Dict[str, object]:
     """Audit several packages and summarise."""
-    results = [audit_package(package) for package in packages]
+    results = [audit_package(package, require_public_data=require_public_data) for package in packages]
     findings = [f"{result['package']}: {finding}" for result in results for finding in result["findings"]]
     return {
         "packages": len(results),
@@ -141,13 +169,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("packages", nargs="*", type=Path, help="packages to audit; defaults to every one in tasks/")
     parser.add_argument("--json", action="store_true", help="emit the report instead of the summary line")
+    parser.add_argument(
+        "--require-public-data", action="store_true",
+        help="require generated input and golden manifests for every public smoke case",
+    )
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
     packages = args.packages or all_packages()
-    report = audit_packages(packages)
+    report = audit_packages(packages, require_public_data=args.require_public_data)
     if args.json:
         print(json.dumps(report, indent=2))
     elif report["passed"]:

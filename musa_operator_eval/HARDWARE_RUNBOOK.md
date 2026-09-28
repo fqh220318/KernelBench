@@ -67,6 +67,12 @@ Two consequences worth stating plainly:
   the same kind of number; but a number from a warm-cache tool (this repository's own
   earlier records, for instance) is not.
 
+The guide's §4.4 minimum text also names repeated rounds and a median. The current
+framework protocol is one cold-cache sequence summarized by a mean. This is a recorded
+deviation, not a synonym: do not change only the baseline to a median-of-rounds, because
+that would make the denominator unlike the submission numerator. A compliant migration
+must update both drivers together and then re-measure every baseline on the target device.
+
 ## The hidden case set
 A submission is graded on the hidden set; the public one exists so something can
 be run before submitting. `run_task.py` evaluates whatever `--cases` points at,
@@ -318,7 +324,51 @@ point existed delayed the B tier's compiled path by weeks. Scope the search (`fi
 is "it is structurally impossible", make the search show that rather than merely
 failing to find it.
 
-## Admission
+## Baseline collection and admission
+
+Start by generating the redacted inventory. It is safe to keep in the public tree and
+does not copy private case ids or measurements:
+
+```bash
+python musa_operator_eval/evaluator/collect_baseline_inventory.py
+python musa_operator_eval/evaluator/collect_baseline_inventory.py --check
+```
+
+For an A task, provide the three non-eager roles as model-level `ModelNew` modules;
+`torch_musa_eager` is measured automatically from the task reference:
+
+```bash
+python musa_operator_eval/evaluator/measure_baseline.py \
+  --task-dir musa_operator_eval/tasks/<package> \
+  --cases musa_operator_eval/private/<task-id>/cases.private.json \
+  --tier A_kernel \
+  --implementation upstream_musa=<module.py> \
+  --implementation mudnn_fused=<module.py> \
+  --implementation torch_musa_sdpa=<module.py> \
+  --output musa_operator_eval/private/<task-id>/baseline.hidden.json
+```
+
+For a B task, add the named naive/expert inputs. The same three common implementations
+remain mandatory; the B-specific flags do not replace them:
+
+```bash
+python musa_operator_eval/evaluator/measure_baseline.py \
+  --task-dir musa_operator_eval/tasks/<package> \
+  --cases musa_operator_eval/private/<task-id>/cases.private.json \
+  --tier B_library \
+  --naive musa_operator_eval/private/<task-id>/naive/model_new.py \
+  --expert musa_operator_eval/private/<task-id>/expert/model_new.py \
+  --implementation upstream_musa=<module.py> \
+  --implementation mudnn_fused=<module.py> \
+  --implementation torch_musa_sdpa=<module.py> \
+  --output musa_operator_eval/private/<task-id>/baseline.hidden.json
+```
+
+`--unavailable` remains an honest way to record why a role could not be built, but it
+produces `readiness.status=incomplete` and returns nonzero. Missing, duplicated,
+unavailable, failed, errored or unsupported mandatory rows cannot reach admission or
+ranking. Never put a lookalike implementation under a required role name to make the
+inventory green.
 
 `candidate_gate.py` decides from measured latencies: the geometric mean of
 `naive_library_composition / expert_dispatch` over the cases where both passed.
@@ -326,6 +376,23 @@ A task is not published unless the decision is `admit`.
 
 The mean is geometric on purpose. A task that wins one case tenfold and loses two
 at 0.1x is not worth grading, and an arithmetic mean would admit it.
+
+Record a B decision only against the complete private manifest. The manifest argument
+prevents deleting one difficult Case from the baseline and recomputing a plausible
+readiness block:
+
+```bash
+python musa_operator_eval/evaluator/candidate_gate.py \
+  musa_operator_eval/private/<task-id>/baseline.hidden.json \
+  --output musa_operator_eval/private/<task-id>/admission.json
+
+python musa_operator_eval/evaluator/record_admission.py \
+  --task-dir musa_operator_eval/tasks/<package> \
+  --cases musa_operator_eval/private/<task-id>/cases.private.json \
+  --baseline musa_operator_eval/private/<task-id>/baseline.hidden.json \
+  --admission musa_operator_eval/private/<task-id>/admission.json \
+  --apply
+```
 
 ## What the agent sees
 

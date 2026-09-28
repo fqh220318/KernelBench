@@ -31,6 +31,7 @@ produced the code, so the number identifies the stage and the report explains it
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import importlib.util
 import json
@@ -79,6 +80,7 @@ from exit_codes import (  # noqa: E402  (import follows the sys.path fix-up abov
     EXIT_STATIC_AUDIT_TABLE_LOOKUP,
     EXIT_STATIC_AUDIT_UNCLASSIFIED,
     EXIT_SUMMARY_FAILED,
+    EXIT_TASK_NOT_ADMITTED,
     describe as describe_exit_code,
 )
 
@@ -91,6 +93,7 @@ from case_specialization import (  # noqa: E402,F401
     load_task,
     resolve_case_field,
 )
+import generalization_probe  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO_TOP = ROOT.parent
@@ -107,6 +110,57 @@ DEFAULT_BUILD_SUBDIR = "build"
 # `tensor_contract` uses. Keeping the mapping in one place is what lets the flag
 # be checked against the contract instead of trusted.
 PRECISION_DTYPE_NAMES = {"fp32": "float32", "fp16": "float16", "bf16": "bfloat16"}
+
+
+def admission_readiness_errors(task: dict) -> List[str]:
+    """Return why a B-tier task must not enter scoring yet."""
+    if task.get("tier") != "B_library":
+        return []
+    admission = task.get("admission") or {}
+    reasons = (task.get("library_policy") or {}).get("required_gap_reasons") or []
+    errors: List[str] = []
+    if admission.get("status") != "measured" or admission.get("decision") != "admit":
+        errors.append(
+            f"admission is {admission.get('status')!r}/{admission.get('decision')!r}, "
+            "not measured/admit"
+        )
+    if len(set(reasons)) < 2:
+        errors.append(
+            f"the task declares {len(set(reasons))} gap-reason category; guide §4.3 requires at least 2"
+        )
+    return errors
+
+
+def materialize_runtime_generalization(
+    task: dict,
+    cases_manifest: dict,
+    generated_dir: Path,
+    task_dir: Optional[Path],
+    runtime_seed: Optional[int] = None,
+) -> Optional[dict]:
+    """Append runtime-only probes and generate their inputs/goldens.
+
+    The returned metadata belongs in the report.  The source manifest remains
+    unchanged, so the realized shape never becomes part of a reusable list.
+    """
+    if not cases_manifest.get("generalization_probe"):
+        return None
+    if task_dir is None:
+        raise ValueError("a runtime generalization probe needs its task directory")
+    probes, seed = generalization_probe.materialize_probes(task, cases_manifest, runtime_seed)
+    generation_tool = REPO_TOP / cases_manifest["case_generation"]["tool"]
+    generator = load_module_from_path("musa_runtime_case_generator", generation_tool)
+    for case in probes:
+        generator.generate_case(case, Path(generated_dir), Path(task_dir))
+    cases_manifest["cases"].extend(probes)
+    return {
+        "runtime_seed": seed,
+        "cases": [
+            {"case_id": case["case_id"], "seed": case["seed"], "dtype": case["dtype"],
+             "shape": case["shape"], "expected_path": case.get("expected_path")}
+            for case in probes
+        ],
+    }
 
 # The file name `generate_cases.py` writes a case's golden tensor manifest under.
 GOLDEN_MANIFEST_NAME = "tensors.json"
@@ -963,6 +1017,23 @@ def stage_for_case(case: dict) -> str:
     return CASE_TAG_STAGES.get(str(case.get("tag") or "").lower(), "correctness")
 
 
+def cases_in_stage_order(cases: List[dict]) -> List[dict]:
+    """Order cases by evaluator stage while preserving order inside each stage.
+
+    A manifest is data, not an execution plan. In particular, the runtime
+    generalisation probe is appended after the static cases and can therefore
+    appear after a performance case even though it belongs to correctness. The
+    evaluator owns §4.7's stage order and must not inherit an accidental JSON
+    list order.
+    """
+    return [
+        case
+        for stage in CASE_STAGE_ORDER
+        for case in cases
+        if stage_for_case(case) == stage
+    ]
+
+
 def exit_code_for_case_row(row: dict, case: dict) -> int:
     """The most specific exit code a failing case row justifies.
 
@@ -1013,8 +1084,9 @@ def evaluate_cases(
 ) -> Tuple[List[dict], int]:
     """Run every case, short-circuiting once a stage has failed.
 
-    Cases run in manifest order. A failure records the stage it belongs to and
-    silently skips any case in a *later* stage: the guide's pipeline goes
+    Cases run in stage order (and retain manifest order within a stage). A
+    failure records the stage it belongs to and explicitly skips any case in a
+    *later* stage: the guide's pipeline goes
     correctness → boundary → stability → performance, and a boundary probe tells
     you nothing once the answer is known to be wrong. Cases in the same stage all
     run, so a bad submission still reports every correctness disagreement it has.
@@ -1027,7 +1099,7 @@ def evaluate_cases(
     failed_stage_rank: Optional[int] = None
     exit_code = EXIT_OK
 
-    for case in cases:
+    for case in cases_in_stage_order(cases):
         stage = stage_for_case(case)
         stage_rank = CASE_STAGE_ORDER.index(stage)
 
@@ -1124,6 +1196,7 @@ def evaluate_task(
     build_dir: Optional[Path] = None,
     submission_path: Optional[Path] = None,
     stability_reruns: int = 1,
+    generalization_seed: Optional[int] = None,
 ) -> dict:
     """Run the full §4.7 pipeline for one submission, short-circuiting per stage.
 
@@ -1131,17 +1204,37 @@ def evaluate_task(
     it as a file rather than as a string: the build runs the starter's script
     against it. It is last so the positional callers that predate it keep working.
     """
-    cases = cases_manifest["cases"]
+    cases_manifest = copy.deepcopy(cases_manifest)
     case_parameters = task.get("case_parameters") or {}
     build_dir = Path(build_dir) if build_dir else Path(generated_dir) / DEFAULT_BUILD_SUBDIR
     report: dict = {
         "mode": "full",
         "task_id": task.get("id"),
         "tier": task.get("tier"),
+        "task_admission": task.get("admission"),
         "backend": backend,
         "precision": precision,
         "stages": [],
     }
+
+    admission_errors = admission_readiness_errors(task)
+    if admission_errors:
+        report["admission"] = {"passed": False, "errors": admission_errors}
+        report["summary"] = build_summary(EXIT_TASK_NOT_ADMITTED, errors=admission_errors)
+        return report
+
+    try:
+        runtime_probe = materialize_runtime_generalization(
+            task, cases_manifest, generated_dir, task_dir, generalization_seed
+        )
+    except (OSError, ValueError, RuntimeError, ImportError) as error:
+        report["case_generation"] = {"errors": [f"runtime generalization probe failed: {error}"]}
+        report["stages"].append("case_generation")
+        report["summary"] = build_summary(EXIT_CASE_GENERATION_FAILED)
+        return report
+    if runtime_probe:
+        report["generalization_probe"] = runtime_probe
+    cases = cases_manifest["cases"]
 
     permitted = allowed_precisions(task)
     if precision not in permitted:
@@ -1305,6 +1398,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--generalization-seed", type=int, default=None,
+        help="replay one runtime generalization sample; omitted uses runtime entropy",
+    )
+    parser.add_argument(
         "--generated-dir",
         type=Path,
         help=(
@@ -1409,6 +1506,7 @@ def main() -> int:
             build_dir,
             args.submission,
             args.stability_reruns,
+            args.generalization_seed,
         )
         report["submission"] = str(args.submission)
         report["environment"] = environment

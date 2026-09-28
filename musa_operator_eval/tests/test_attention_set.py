@@ -76,6 +76,16 @@ class ManifestShapeTests(unittest.TestCase):
                     if not tier.get("eligible"):
                         self.assertTrue(tier.get("reason"), f"{entry['entry_id']}/{tier_name} has no reason")
 
+    def test_an_eligible_b_entry_states_whether_it_is_currently_scoreable(self):
+        for entry in self.manifest["entries"]:
+            tier = entry["tier"]["B_library"]
+            if not tier.get("eligible"):
+                continue
+            with self.subTest(entry=entry["entry_id"]):
+                self.assertIn("scoreable", tier)
+                if tier["scoreable"] is False:
+                    self.assertTrue(tier.get("scoreability_reason"))
+
     def test_targets_cover_both_musa_architectures_under_discussion(self):
         arches = {target["musa_arch"] for target in self.manifest["targets"]}
         self.assertIn("mp_22", arches)
@@ -157,7 +167,7 @@ class VerificationTests(unittest.TestCase):
         if all(reference.get("branch_reachable") is None for reference in claimed):
             self.skipTest(
                 "archive branch not fetched; run: git fetch origin "
-                "feat/import-musa-attention-set:refs/remotes/origin/feat/import-musa-attention-set"
+                "feat/import-musa-attention-set-useless:refs/remotes/origin/feat/import-musa-attention-set-useless"
             )
         for reference in claimed:
             with self.subTest(path=reference["path"]):
@@ -369,7 +379,7 @@ class CandidateFindingTests(unittest.TestCase):
 
     def test_the_source_archive_block_points_at_a_branch(self):
         archive = self.record["source_archive"]
-        self.assertEqual(archive["branch"], "feat/import-musa-attention-set")
+        self.assertEqual(archive["branch"], "feat/import-musa-attention-set-useless")
         self.assertTrue(archive["merge_status"])
 
 

@@ -144,6 +144,7 @@ class BuildDirectoryTests(unittest.TestCase):
 class BuildProductTests(unittest.TestCase):
     """Which files under a build directory the stage has an opinion about."""
 
+    @unittest.skipUnless(Path("/bin/true").is_file(), "requires a system ELF executable")
     def test_a_suffixless_executable_is_a_build_product(self):
         """The linker's output has no suffix, and the object files have no dynamic section."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -162,6 +163,7 @@ class BuildProductTests(unittest.TestCase):
             names = sorted(path.name for path in link_whitelist.build_products(build))
             self.assertEqual(names, ["libbroken.so"])
 
+    @unittest.skipUnless(Path("/bin/true").is_file(), "requires a system ELF executable")
     def test_a_linked_executable_is_checked_and_its_libraries_are_read(self):
         with tempfile.TemporaryDirectory() as tmp:
             build = Path(tmp)

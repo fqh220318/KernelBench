@@ -35,12 +35,18 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any, List, Optional
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_DIR = ROOT / "schemas"
+EVALUATOR_DIR = Path(__file__).resolve().parent
+if str(EVALUATOR_DIR) not in sys.path:
+    sys.path.insert(0, str(EVALUATOR_DIR))
+
+from baseline_readiness import declared_readiness_errors  # noqa: E402
 
 # The document root in a validation message. Spelled with chr() because a bare
 # dollar sign inside an f-string expression is easy for other tooling to mangle.
@@ -56,6 +62,7 @@ SCHEMAS = {
     "baseline": "baseline.schema.json",
     "environment_snapshot": "environment_snapshot.schema.json",
     "evaluation_report": "evaluation_report.schema.json",
+    "operator_candidate_pool": "operator_candidate_pool.schema.json",
 }
 
 
@@ -249,12 +256,10 @@ def business_errors(instance: dict, kind: str) -> List[str]:
             if not reasons:
                 errors.append("cases: a private B manifest carries no library gap with a reason")
 
-    # §4.3 also asks a hidden gap set to cover at least two reason categories, and
-    # that rule is deliberately not enforced here. It is a statement about a task
-    # contract and a case list together -- a task that cannot reach a second
-    # category is allowed one, if its contract records why -- and a validator that
-    # sees one document at a time cannot tell the two apart. It is enforced where
-    # both are in scope, in `make_private_manifest.py`.
+    # §4.3 also asks a hidden gap set to cover at least two reason categories. The
+    # schema enforces this for admitted task contracts; `make_private_manifest.py`
+    # enforces it again with the private case list in scope. There is no one-reason
+    # admission waiver.
 
     if kind == "task_contract":
         # A task's `tolerances` block is a declaration, not the grading authority:
@@ -287,6 +292,73 @@ def business_errors(instance: dict, kind: str) -> List[str]:
             if implementation not in declared:
                 errors.append(
                     f"results[{index}].implementation: {implementation!r} is not in implementations"
+                )
+        errors.extend(declared_readiness_errors(instance))
+
+    if kind == "operator_candidate_pool":
+        sources = instance.get("sources", [])
+        families = instance.get("families", [])
+        candidates = instance.get("candidates", [])
+        source_ids = [row.get("source_id") for row in sources]
+        family_ids = [row.get("family_id") for row in families]
+        candidate_ids = [row.get("candidate_id") for row in candidates]
+
+        for label, values in (
+            ("sources.source_id", source_ids),
+            ("families.family_id", family_ids),
+            ("candidates.candidate_id", candidate_ids),
+        ):
+            duplicates = sorted(value for value in set(values) if values.count(value) > 1)
+            if duplicates:
+                errors.append(f"{label}: duplicate values {duplicates}")
+
+        known_sources = set(source_ids)
+        known_families = set(family_ids)
+        for index, candidate in enumerate(candidates):
+            if candidate.get("family_id") not in known_families:
+                errors.append(
+                    f"candidates[{index}].family_id: unknown {candidate.get('family_id')!r}"
+                )
+            unknown_sources = sorted(set(candidate.get("source_refs", [])) - known_sources)
+            if unknown_sources:
+                errors.append(f"candidates[{index}].source_refs: unknown {unknown_sources}")
+
+            b_tier = candidate.get("b_tier", {})
+            gaps = set(b_tier.get("gap_hypotheses", []))
+            if b_tier.get("status") in {"promising", "needs_gap_probe"} and len(gaps) < 2:
+                errors.append(
+                    f"candidates[{index}].b_tier: fewer than two candidate gap categories"
+                )
+            if b_tier.get("status") == "not_suitable" and gaps:
+                errors.append(
+                    f"candidates[{index}].b_tier: not_suitable retains gap hypotheses"
+                )
+            if (
+                candidate.get("decision") == "shortlisted"
+                and candidate.get("evidence_level") == "lead_only"
+            ):
+                errors.append(
+                    f"candidates[{index}]: a lead-only candidate cannot be shortlisted"
+                )
+
+        decisions = {
+            key: sum(candidate.get("decision") == key for candidate in candidates)
+            for key in ("shortlisted", "needs_probe", "deferred")
+        }
+        summary = instance.get("summary", {})
+        derived = {
+            "source_count": len(sources),
+            "family_count": len(families),
+            "candidate_count": len(candidates),
+            **decisions,
+            "hardware_validated": sum(
+                bool(candidate.get("hardware_validated")) for candidate in candidates
+            ),
+        }
+        for field, value in derived.items():
+            if summary.get(field) != value:
+                errors.append(
+                    f"summary.{field}: recorded {summary.get(field)!r}, derived {value!r}"
                 )
     return errors
 
@@ -350,11 +422,13 @@ def classify(path: Path) -> str:
         return "environment_snapshot"
     if "report" in name:
         return "evaluation_report"
+    if name.endswith("operator_candidate_pool.json"):
+        return "operator_candidate_pool"
     raise SchemaError(f"cannot infer a schema kind from {path}; pass --kind")
 
 
 def discover(root: Path) -> List[tuple]:
-    """Every artifact of the six kinds that this repository actually ships.
+    """Every schema-governed artifact that this repository actually ships.
 
     The hidden side is enumerated along with the public one. It used to be left
     out, on the grounds that the generated manifests labelled their gap cases with
@@ -368,10 +442,14 @@ def discover(root: Path) -> List[tuple]:
     found += [(path, "semantics_contract") for path in sorted(root.glob("tasks/*/semantics.json"))]
     found += [(path, "case_manifest") for path in sorted(root.glob("tasks/*/public_cases.json"))]
     found += [(path, "environment_snapshot") for path in sorted(root.glob("environments/*.public.json"))]
+    found += [(path, "baseline") for path in sorted(root.glob("templates/baseline.*.template.json"))]
     found += [(path, "case_manifest") for path in sorted(root.glob("private/*/cases.private.json"))]
     found += [(path, "baseline") for path in sorted(root.glob("private/*/baseline.hidden.json"))]
-    found += [(path, "baseline") for path in sorted(root.glob("private/*/baseline.hidden.json"))]
     found += [(path, "environment_snapshot") for path in sorted(root.glob("private/environments/*.full.json"))]
+    found += [
+        (path, "operator_candidate_pool")
+        for path in sorted(root.glob("sources/*operator_candidate_pool.json"))
+    ]
     return found
 
 

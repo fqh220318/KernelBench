@@ -22,14 +22,14 @@ The attention family of the MUSA operator evaluation: every KernelBench attentio
 
 | entry | KernelBench | 形状 | 类型 | A 类 | B 类 | 最终 speedup |
 |---|---|---|---|---|---|---:|
-| `kb_l1_97` | L1/97 ScaledDotProductAttention | B=32, H=32, S=512, D=1024 | `dense_mha` | 有答案 | 可判分 | 0.3997x |
-| `kb_l3_43` | L3/43 MinGPTCausalAttention | B=128, H=8, S=512, C=768, D=96 | `causal_mha` | 有答案 | 可判分 | 0.3385x |
-| `kb_l3_44` | L3/44 MiniGPTBlock | B=128, H=8, S=512, C=768, D=96 | `causal_mha` | 有答案 | 可判分 | 0.5317x |
-| `kb_l3_50` | L3/50 ReLUSelfAttention | B=16, H=12, S=1024, C=768, D=64 | `causal_relu_attention` | 有答案 | 不计分 | 0.3367x |
-| `kb_l3_31` | L3/31 VisionAttention | B=2, H=4, S=16384, D=32 | `dense_mha` | 有答案 | 可判分 | 0.2611x |
-| `kb_l3_30` | L3/30 SwinTransformerV2 | B=10, S_window=49, D=32 | `windowed_mha` | 有答案 | 不计分 | 0.8076x |
-| `kb_l3_28` | L3/28 VisionTransformer | B=10, layers=6, S=197, H=8, D=64 | `dense_mha_degenerate` | 不计分 | 不计分 | 1.0841x |
-| `kb_l3_32` | L3/32 ConvolutionalVisionTransformer | B=10, image=32, C=128, H=4 | `dense_mha_degenerate` | 不计分 | 不计分 | 1.1879x |
+| `kb_l1_97` | L1/97 ScaledDotProductAttention | B=32, H=32, S=512, D=1024 | `dense_mha` | 有答案 | 阻塞 | 0.3997x |
+| `kb_l3_43` | L3/43 MinGPTCausalAttention | B=128, H=8, S=512, C=768, D=96 | `causal_mha` | 有答案 | 阻塞 | 0.3385x |
+| `kb_l3_44` | L3/44 MiniGPTBlock | B=128, H=8, S=512, C=768, D=96 | `causal_mha` | 有答案 | 阻塞 | 0.5317x |
+| `kb_l3_50` | L3/50 ReLUSelfAttention | B=16, H=12, S=1024, C=768, D=64 | `causal_relu_attention` | 有答案 | 不适用 | 0.3367x |
+| `kb_l3_31` | L3/31 VisionAttention | B=2, H=4, S=16384, D=32 | `dense_mha` | 有答案 | 阻塞 | 0.2611x |
+| `kb_l3_30` | L3/30 SwinTransformerV2 | B=10, S_window=49, D=32 | `windowed_mha` | 有答案 | 不适用 | 0.8076x |
+| `kb_l3_28` | L3/28 VisionTransformer | B=10, layers=6, S=197, H=8, D=64 | `dense_mha_degenerate` | 不计分 | 不适用 | 1.0841x |
+| `kb_l3_32` | L3/32 ConvolutionalVisionTransformer | B=10, image=32, C=128, H=4 | `dense_mha_degenerate` | 不计分 | 不适用 | 1.1879x |
 
 ## 可用 kernel 候选
 
@@ -137,7 +137,7 @@ The attention family of the MUSA operator evaluation: every KernelBench attentio
 ### kb_l1_97 — L1/97 ScaledDotProductAttention
 
 - 参考实现：`KernelBench/level1/97_ScaledDotProductAttention.py`（`Model`）
-  - sha256 `a07ca5135657c2ea…`，24 行
+  - sha256 `66202f92b48447c0…`，24 行
 - A 类答案：`KernelBench/level1_musa/problem_97/model_new.py`（216 行）
 - 结构：plain F.scaled_dot_product_attention over already-split Q/K/V, no mask, no GQA
 - 形状说明：head_dim 1024 is what rules out the flash-tile design here: the q/o state alone is about 8KB per row, so the band width collapses to at most 8 rows and latency starvation beats the bandwidth saved.
@@ -153,7 +153,7 @@ The attention family of the MUSA operator evaluation: every KernelBench attentio
 ### kb_l3_43 — L3/43 MinGPTCausalAttention
 
 - 参考实现：`KernelBench/level3/43_MinGPTCausalAttention.py`（`Model`）
-  - sha256 `9d280c98c015edca…`，64 行
+  - sha256 `b9219d6338eff6b4…`，64 行
 - A 类答案：`KernelBench/level3_musa/problem_43/model_new.py`（313 行）
 - 结构：fused QKV linear, split into heads, scaled QK^T, top-left causal masked_fill(-inf), softmax, P.V, output projection
 
@@ -168,7 +168,7 @@ The attention family of the MUSA operator evaluation: every KernelBench attentio
 ### kb_l3_44 — L3/44 MiniGPTBlock
 
 - 参考实现：`KernelBench/level3/44_MiniGPTBlock.py`（`Model`）
-  - sha256 `e73093b5d6648474…`，97 行
+  - sha256 `ebcb2793b5b23d83…`，97 行
 - A 类答案：`KernelBench/level3_musa/problem_44/model_new.py`（317 行）
 - 结构：a full MiniGPT transformer block: the causal attention of 43 plus the MLP and both residual paths
 
@@ -182,7 +182,7 @@ The attention family of the MUSA operator evaluation: every KernelBench attentio
 ### kb_l3_50 — L3/50 ReLUSelfAttention
 
 - 参考实现：`KernelBench/level3/50_ReLUSelfAttention.py`（`Model`）
-  - sha256 `08768b53a425354e…`，67 行
+  - sha256 `af1198b62b00230a…`，67 行
 - A 类答案：`KernelBench/level3_musa/problem_50/model_new.py`（275 行）
 - 结构：causal self-attention with relu on the masked scores instead of softmax, so there is no denominator
 
@@ -196,7 +196,7 @@ The attention family of the MUSA operator evaluation: every KernelBench attentio
 ### kb_l3_31 — L3/31 VisionAttention
 
 - 参考实现：`KernelBench/level3/31_VisionAttention.py`（`Model`）
-  - sha256 `96c0d2c7a18b4219…`，40 行
+  - sha256 `c360c734332dd46e…`，40 行
 - A 类答案：`KernelBench/level3_musa/problem_31/model_new.py`（221 行）
 - 结构：single dense multi-head attention over a flattened 128x128 image, no mask, no causal
 - 形状说明：16384 tokens at head_dim 32 is the long-sequence small-head case: the score matrix is quadratic in 16384 while the per-row state is tiny.
@@ -213,7 +213,7 @@ The attention family of the MUSA operator evaluation: every KernelBench attentio
 ### kb_l3_30 — L3/30 SwinTransformerV2
 
 - 参考实现：`KernelBench/level3/30_SwinTransformerV2.py`（`Model`）
-  - sha256 `7d1c6195d4f15a88…`，539 行
+  - sha256 `bc3f3d534d6620bd…`，539 行
 - A 类答案：`KernelBench/level3_musa/problem_30/model_new.py`（661 行）
 - 结构：shifted-window attention with relative position bias over 7x7=49-token windows
 - 形状说明：The window is 49 tokens, which is smaller than one warp's worth of work at mp_22, so the parallel decomposition is the whole problem.
@@ -226,37 +226,10 @@ The attention family of the MUSA operator evaluation: every KernelBench attentio
 - The per-row kernel recomputed the whole window of K/V for every query row; one CTA per (window, head) that stages the entire window once cut the attention portion from 52ms to 18.5ms.
 - This is the closest entry to parity in the set at 0.81x, and the remaining gap is attributed to the serial per-row softmax inside the window kernel.
 
-#### kb_l3_30 的 B 轨不成立（实测结论）
-
-这道题只保留 A 轨。原计划把 A 类手写窗注意力换成库的融合路径，实测把这个计划否掉了，
-否掉的理由和最初预期的**相反**：不是融合内核吃不下这个核心，而是它吃得下。
-
-设备实测（`snapshot_id` 见 `environments/musa-5f9d7b9dd1233a68.public.json` 的
-`library_contracts.scaled_dot_product_attention`）：
-
-| 交给 `scaled_dot_product_attention` 的加法 mask | 结果 |
-|---|---|
-| 无 mask | 走融合，偏置丢失 |
-| 加法 `(S, S)` | **被接受，然后静默忽略** |
-| 加法 `(H, S, S)` | 报错，muDNN 原因为 `Internal error 3d mask shape` |
-| 加法 `(B, H, S, S)` | 被接受并**正确应用**，对 fp32 参考误差 0.00186 |
-
-也就是说，余弦注意力和相对位置偏置都能进一次调用，把 `logit_scale` 折进 `q`、把偏置当
-`attn_mask` 传进去即可；只要把偏置展开到四维。**这是一个陷阱，不是一个缺口** —— 传错秩会
-静默算错，但参考实现自己把偏置加到分数上时已经是四维的，所以用例没法要求专家绕开它。
-
-唯一还能造缺口的是 head 维度（`embed_dim/3`），而它够不着：`get_init_inputs()` 返回空，
-用例移动不了架构；要让 B 层够得着就得改 `problem.py`，而 A 层被要求与上游逐字相同，且
-`tests/test_task_packages.py` 要求同一 entry 的两层共享一份 case 参数化与语义契约。只拓宽
-B 层会让两层描述成两个不同的问题，两层都拓宽会破坏 A 层的同一性。所以这题是 A 轨有答案、
-B 轨无路，`kb_l3_30_b` 包因此不存在。
-
-保留一处风险提示：融合路径只在 `head_dim <= 128` 时可达，而本条的 head 维度恒为 32。
-
 ### kb_l3_28 — L3/28 VisionTransformer
 
 - 参考实现：`KernelBench/level3/28_VisionTransformer.py`（`Model`）
-  - sha256 `f537369b6a72f9e5…`，84 行
+  - sha256 `4f176d68087404ec…`，84 行
 - A 类答案：`KernelBench/level3_musa/problem_28/model_new.py`（273 行）
 - 结构：a 6-layer ViT whose per-layer attention is dense over 197 tokens at head_dim 64
 - 形状说明：Listed as degenerate in the tuning record: the attention core is not the bottleneck at this sequence length, and the kernels were left unchanged.
@@ -270,7 +243,7 @@ B 轨无路，`kb_l3_30_b` 包因此不存在。
 ### kb_l3_32 — L3/32 ConvolutionalVisionTransformer
 
 - 参考实现：`KernelBench/level3/32_ConvolutionalVisionTransformer.py`（`Model`）
-  - sha256 `8ec3e9e2bc98ea22…`，72 行
+  - sha256 `c1d2873f0c26f55c…`，72 行
 - A 类答案：`KernelBench/level3_musa/problem_32/model_new.py`（259 行）
 - 结构：CvT whose attention operates on a small token count after convolutional token embedding
 - 形状说明：Degenerate like 28; the sequence is small and the convolution dominates.
@@ -333,15 +306,15 @@ B 轨无路，`kb_l3_30_b` 包因此不存在。
 
 ## 引用路径状态
 
-这些路径被仓库内的文件引用为上游快照。要分清两种情况：标了分支的，本工作树里没有、但在 `feat/import-musa-attention-set` 上存在——上游源码归档在那条分支上，尚未合入，是否合入尚未决定；没标分支的，是本机也确实不存在。
+这些路径被仓库内的文件引用为上游快照。要分清两种情况：标了分支的，本工作树里没有、但在 `feat/import-musa-attention-set-useless` 上存在——上游源码归档在那条分支上，尚未合入，是否合入尚未决定；没标分支的，是本机也确实不存在。
 
 | 引用方 | 路径 | 角色 | 本工作树 | 所在分支 |
 |---|---|---|---|---|
-| `musa_operator_eval/sources/attention-source-001.json` | `musa_attention_set/implementations/torch_musa/2.11.0.post1` | framework SDPA and muDNN attention integration | 缺失（预期） / 分支可达 | `feat/import-musa-attention-set` |
-| `musa_operator_eval/sources/attention-source-001.json` | `musa_attention_set/implementations/mate/v0.2.6` | MP31 fused attention library candidate | 缺失（预期） / 分支可达 | `feat/import-musa-attention-set` |
-| `musa_operator_eval/sources/attention-source-001.json` | `musa_attention_set/implementations/mutlass/commit-78b349514831` | FMHA implementation dependency and expert reference | 缺失（预期） / 分支可达 | `feat/import-musa-attention-set` |
-| `musa_operator_eval/sources/attention-source-001.json` | `musa_attention_set/implementations/tilelang_musa_legacy/commit-4b59fea16afc` | S4000/S5000 kernel reference candidate | 缺失（预期） / 分支可达 | `feat/import-musa-attention-set` |
-| `KernelBench/level3_musa/problem_43/model_new.py` | `musa_attention_set` | design reference named in the kernel header comment | 缺失（预期） / 分支可达 | `feat/import-musa-attention-set` |
+| `musa_operator_eval/sources/attention-source-001.json` | `musa_attention_set/implementations/torch_musa/2.11.0.post1` | framework SDPA and muDNN attention integration | 缺失（预期） / 分支可达 | `feat/import-musa-attention-set-useless` |
+| `musa_operator_eval/sources/attention-source-001.json` | `musa_attention_set/implementations/mate/v0.2.6` | MP31 fused attention library candidate | 缺失（预期） / 分支可达 | `feat/import-musa-attention-set-useless` |
+| `musa_operator_eval/sources/attention-source-001.json` | `musa_attention_set/implementations/mutlass/commit-78b349514831` | FMHA implementation dependency and expert reference | 缺失（预期） / 分支可达 | `feat/import-musa-attention-set-useless` |
+| `musa_operator_eval/sources/attention-source-001.json` | `musa_attention_set/implementations/tilelang_musa_legacy/commit-4b59fea16afc` | S4000/S5000 kernel reference candidate | 缺失（预期） / 分支可达 | `feat/import-musa-attention-set-useless` |
+| `KernelBench/level3_musa/problem_43/model_new.py` | `musa_attention_set` | design reference named in the kernel header comment | 缺失（预期） / 分支可达 | `feat/import-musa-attention-set-useless` |
 | `docs/musa/source_inventory.md` | `torch_musa/` | level 1 upstream source tree | 缺失（预期） | `—` |
 | `docs/musa/source_inventory.md` | `mutlass/` | level 1 upstream source tree | 缺失（预期） | `—` |
 | `docs/musa/source_inventory.md` | `mate/` | level 1 upstream source tree | 缺失（预期） | `—` |

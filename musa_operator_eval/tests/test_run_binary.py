@@ -237,6 +237,7 @@ class BuildStageTests(unittest.TestCase):
     def _task_with_script(self, script: Path) -> dict:
         return {"id": "fixture", "tier": "A_kernel", "starter": {"cpp": {"build": str(script), "regions": ["device_kernel"]}}}
 
+    @unittest.skipUnless(os.name == "posix", "fixture executes a POSIX shell build script")
     def test_a_successful_build_passes(self):
         with tempfile.TemporaryDirectory() as tmp:
             script = Path(tmp) / "build.sh"
@@ -246,6 +247,7 @@ class BuildStageTests(unittest.TestCase):
             self.assertTrue(result["passed"])
             self.assertFalse(result["environment_missing"])
 
+    @unittest.skipUnless(os.name == "posix", "fixture executes a POSIX shell build script")
     def test_a_failed_build_is_a_build_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             script = Path(tmp) / "build.sh"
@@ -255,6 +257,7 @@ class BuildStageTests(unittest.TestCase):
             self.assertFalse(result["passed"])
             self.assertIn("ninja", result["detail"])
 
+    @unittest.skipUnless(os.name == "posix", "fixture executes a POSIX shell build script")
     def test_a_missing_device_stack_is_an_environment_fact(self):
         with tempfile.TemporaryDirectory() as tmp:
             script = Path(tmp) / "build.sh"
@@ -396,6 +399,72 @@ class ToleranceResolutionTests(unittest.TestCase):
             run_binary.resolve_case_tolerance(task, "fp16"),
         )
         self.assertTrue(passed, errors)
+
+
+class CompiledStageSchedulerTests(unittest.TestCase):
+    class Contract:
+        CASE_STAGE_ORDER = ("correctness", "boundary", "stability", "performance")
+        STAGE_EXIT_CODES = {
+            "correctness": run_binary.exit_codes.EXIT_CORRECTNESS_FAILED,
+            "boundary": run_binary.exit_codes.EXIT_BOUNDARY_FAILED,
+            "stability": run_binary.exit_codes.EXIT_STABILITY_FAILED,
+            "performance": run_binary.exit_codes.EXIT_PERFORMANCE_FAILED,
+        }
+        TAGS = {
+            "correctness": "correctness",
+            "boundary": "boundary",
+            "stability": "stability",
+            "perf": "performance",
+        }
+
+        @classmethod
+        def stage_for_case(cls, case):
+            return cls.TAGS.get(case.get("tag"), "correctness")
+
+    def test_manifest_order_cannot_run_performance_before_correctness(self):
+        cases = [
+            {"case_id": "p1", "tag": "perf"},
+            {"case_id": "c1", "tag": "correctness"},
+            {"case_id": "c2", "tag": "correctness"},
+            {"case_id": "b1", "tag": "boundary"},
+        ]
+        called = []
+
+        def run_one(case):
+            called.append(case["case_id"])
+            return {"case_id": case["case_id"], "passed": case["case_id"] != "c1"}
+
+        rows, code, stages = run_binary.evaluate_case_stages(cases, run_one, self.Contract)
+        self.assertEqual(code, run_binary.exit_codes.EXIT_CORRECTNESS_FAILED)
+        self.assertEqual(called, ["c1", "c2"], "every current-stage case runs and later stages do not")
+        self.assertEqual([row["case_id"] for row in rows], ["c1", "c2", "b1", "p1"])
+        self.assertTrue(next(row for row in rows if row["case_id"] == "b1")["skipped"])
+        self.assertEqual(
+            [item["status"] for item in stages],
+            ["failed", "skipped", "not_present", "skipped"],
+        )
+
+    def test_a_boundary_failure_returns_the_boundary_code(self):
+        cases = [
+            {"case_id": "c1", "tag": "correctness"},
+            {"case_id": "b1", "tag": "boundary"},
+            {"case_id": "p1", "tag": "perf"},
+        ]
+
+        def run_one(case):
+            return {"case_id": case["case_id"], "passed": case["case_id"] != "b1"}
+
+        rows, code, _stages = run_binary.evaluate_case_stages(cases, run_one, self.Contract)
+        self.assertEqual(code, run_binary.exit_codes.EXIT_BOUNDARY_FAILED)
+        self.assertTrue(rows[-1]["skipped"])
+
+    def test_a_dispatch_trace_failure_keeps_its_specific_code(self):
+        cases = [{"case_id": "c1", "tag": "correctness"}]
+        row = {"case_id": "c1", "passed": False, "dispatch_trace_passed": False}
+        _rows, code, _stages = run_binary.evaluate_case_stages(
+            cases, lambda _case: dict(row), self.Contract
+        )
+        self.assertEqual(code, run_binary.exit_codes.EXIT_DISPATCH_TRACE_MISMATCH)
 
 
 class CaseRunTests(unittest.TestCase):
@@ -629,6 +698,11 @@ class PrecisionGuardTests(unittest.TestCase):
         self.assertEqual(code, run_binary.exit_codes.EXIT_PRECISION_CONTRACT_MISMATCH, report)
         self.assertEqual(report["stages"], [])
 
+    def test_a_b_tier_task_blocked_on_gap_coverage_never_reaches_the_device(self):
+        code, report = self._run("kb_l3_43_b", "fp16")
+        self.assertEqual(code, run_binary.exit_codes.EXIT_TASK_NOT_ADMITTED, report)
+        self.assertEqual(report["stages"], [])
+
     def test_an_a_tier_run_at_float16_is_refused(self):
         code, report = self._run("kb_l1_97_a", "fp16")
         self.assertEqual(code, run_binary.exit_codes.EXIT_PRECISION_CONTRACT_MISMATCH, report)
@@ -751,6 +825,7 @@ class TimingTests(unittest.TestCase):
         self.assertEqual(row["runtime"], row["wall_ms"])
 
 
+@unittest.skipUnless(os.name == "posix", "end-to-end fixture builds through a POSIX shell script")
 class PipelineTests(unittest.TestCase):
     """The whole compiled path over a copied package, with the device parts faked."""
 

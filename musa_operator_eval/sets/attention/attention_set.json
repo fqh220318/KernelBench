@@ -114,6 +114,8 @@
         },
         "B_library": {
           "eligible": true,
+          "scoreable": false,
+          "scoreability_reason": "blocked_gap_coverage: only unsupported_shape is measured, while §4.3 requires at least two gap-reason categories",
           "basis": "torch_musa registers sdpa and routes it to muDNN SDP; mutlass experimental/fmha and MATE are the fused candidates",
           "expected_path": "fused_library for the registered configuration"
         }
@@ -187,6 +189,8 @@
         },
         "B_library": {
           "eligible": true,
+          "scoreable": false,
+          "scoreability_reason": "blocked_gap_coverage: only unsupported_shape is measured, while §4.3 requires at least two gap-reason categories",
           "basis": "the attention core is an sdpa call; the surrounding projections are nn.Linear and so are library-routed already",
           "expected_path": "fused_library for the core, library_composition for the projections"
         }
@@ -260,6 +264,8 @@
         },
         "B_library": {
           "eligible": true,
+          "scoreable": false,
+          "scoreability_reason": "blocked_gap_coverage: only unsupported_shape is measured, while §4.3 requires at least two gap-reason categories",
           "basis": "same attention core as 43, but a much larger share of the runtime is now the library-routed MLP, which is exactly the composition case the tiers must separate",
           "expected_path": "library_composition"
         }
@@ -402,6 +408,8 @@
         },
         "B_library": {
           "eligible": true,
+          "scoreable": false,
+          "scoreability_reason": "blocked_gap_coverage: only unsupported_shape is measured, while §4.3 requires at least two gap-reason categories",
           "basis": "a plain unmasked attention over a contiguous 4D tensor is what the fused library path is for",
           "expected_path": "fused_library"
         }
@@ -642,7 +650,7 @@
     }
   ],
   "source_archive": {
-    "branch": "feat/import-musa-attention-set",
+    "branch": "feat/import-musa-attention-set-useless",
     "tip_commit": "f249b2f",
     "path": "musa_attention_set",
     "files": 2126,
@@ -653,31 +661,31 @@
       "referenced_by": "musa_operator_eval/sources/attention-source-001.json",
       "path": "musa_attention_set/implementations/torch_musa/2.11.0.post1",
       "role": "framework SDPA and muDNN attention integration",
-      "resolves_on": "feat/import-musa-attention-set"
+      "resolves_on": "feat/import-musa-attention-set-useless"
     },
     {
       "referenced_by": "musa_operator_eval/sources/attention-source-001.json",
       "path": "musa_attention_set/implementations/mate/v0.2.6",
       "role": "MP31 fused attention library candidate",
-      "resolves_on": "feat/import-musa-attention-set"
+      "resolves_on": "feat/import-musa-attention-set-useless"
     },
     {
       "referenced_by": "musa_operator_eval/sources/attention-source-001.json",
       "path": "musa_attention_set/implementations/mutlass/commit-78b349514831",
       "role": "FMHA implementation dependency and expert reference",
-      "resolves_on": "feat/import-musa-attention-set"
+      "resolves_on": "feat/import-musa-attention-set-useless"
     },
     {
       "referenced_by": "musa_operator_eval/sources/attention-source-001.json",
       "path": "musa_attention_set/implementations/tilelang_musa_legacy/commit-4b59fea16afc",
       "role": "S4000/S5000 kernel reference candidate",
-      "resolves_on": "feat/import-musa-attention-set"
+      "resolves_on": "feat/import-musa-attention-set-useless"
     },
     {
       "referenced_by": "KernelBench/level3_musa/problem_43/model_new.py",
       "path": "musa_attention_set",
       "role": "design reference named in the kernel header comment",
-      "resolves_on": "feat/import-musa-attention-set"
+      "resolves_on": "feat/import-musa-attention-set-useless"
     },
     {
       "referenced_by": "docs/musa/source_inventory.md",

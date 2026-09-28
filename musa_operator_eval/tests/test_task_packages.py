@@ -27,8 +27,9 @@ ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT.parent
 TASKS_DIR = ROOT / "tasks"
 SET_PATH = ROOT / "sets" / "attention" / "attention_set.json"
+SOURCE_RECORD_PATH = ROOT / "sources" / "attention-source-001.json"
 
-CASE_TAGS = {"smoke", "correctness", "boundary", "non_aligned", "extreme", "perf", "generalization"}
+CASE_TAGS = {"smoke", "correctness", "boundary", "non_aligned", "extreme", "perf"}
 SMOKE_RANGE = (3, 5)
 TIERS = ("A_kernel", "B_library")
 
@@ -123,6 +124,57 @@ class SetCoverageTests(unittest.TestCase):
                         f"{entry_id} is marked ineligible for {tier} but a package claims it",
                     )
 
+    def test_b_entry_scoreability_matches_its_package_admission(self):
+        by_entry = {entry["entry_id"]: entry for entry in self.entries}
+        for directory, task in all_packages():
+            if task["tier"] != "B_library" or not task.get("set_entry"):
+                continue
+            admission = task.get("admission") or {}
+            expected = admission.get("status") == "measured" and admission.get("decision") == "admit"
+            recorded = by_entry[task["set_entry"]]["tier"]["B_library"].get("scoreable")
+            with self.subTest(task=directory.name):
+                self.assertEqual(recorded, expected)
+
+
+class SourceProvenanceTests(unittest.TestCase):
+    """§4.1 source metadata is evidence, not an optional annotation."""
+
+    REQUIRED_SOURCE_FIELDS = {
+        "project", "record", "revision", "license", "snapshot_location", "snapshot_revision"
+    }
+
+    def test_every_task_pins_its_source(self):
+        for directory, task in all_packages():
+            source = task.get("source") or {}
+            with self.subTest(task=directory.name):
+                self.assertEqual(self.REQUIRED_SOURCE_FIELDS - set(source), set())
+                for field in self.REQUIRED_SOURCE_FIELDS:
+                    self.assertIsInstance(source[field], str)
+                    self.assertTrue(source[field].strip(), f"{task['id']}: empty source.{field}")
+                self.assertRegex(source["snapshot_revision"], r"^[0-9a-f]{40}$")
+                self.assertNotIn("verified-open-source", source["license"])
+
+    def test_every_source_record_exists(self):
+        for directory, task in all_packages():
+            record = ROOT / task["source"]["record"]
+            with self.subTest(task=directory.name):
+                self.assertTrue(record.is_file(), f"{task['id']}: missing {record}")
+
+    def test_in_repository_snapshots_name_real_files(self):
+        for directory, task in all_packages():
+            source = task["source"]
+            if source["project"] != "KernelBench problem set":
+                continue
+            with self.subTest(task=directory.name):
+                snapshot = REPO / source["snapshot_location"]
+                self.assertTrue(snapshot.is_file(), f"{task['id']}: missing {snapshot}")
+                self.assertEqual(source["snapshot_location"], source["problem"])
+
+    def test_source_archive_is_pinned_to_a_full_revision(self):
+        record = json.loads(SOURCE_RECORD_PATH.read_text(encoding="utf-8"))
+        archive = record["archive"]
+        self.assertRegex(archive["revision"], r"^[0-9a-f]{40}$")
+        self.assertTrue(archive["repository"].startswith("https://"))
 
 class AReferenceIdentityTests(unittest.TestCase):
     """An A-tier reference is the KernelBench problem, byte for byte."""
@@ -400,8 +452,10 @@ class LibraryPolicyTests(unittest.TestCase):
         for _, task in self.b_tier():
             with self.subTest(task=task["id"]):
                 status = task["admission"]["status"]
-                self.assertIn(status, {"pending_device_measurement", "measured"})
-                if status == "pending_device_measurement":
+                self.assertIn(status, {
+                    "pending_device_measurement", "measured", "blocked_gap_coverage"
+                })
+                if status != "measured":
                     self.assertTrue(task["admission"]["reason"])
 
     def test_every_b_tier_capability_reference_is_named_after_its_family(self):
@@ -908,13 +962,11 @@ class GapReasonVocabularyTests(unittest.TestCase):
             with self.subTest(task=task["id"]):
                 self.assertLessEqual(set(task["library_policy"]["required_gap_reasons"]), vocabulary)
 
-    def test_a_package_below_the_two_category_floor_says_so(self):
+    def test_a_package_below_the_two_category_floor_is_blocked(self):
         """§4.3 asks a hidden gap set to cover at least two reason categories.
 
-        A problem that genuinely cannot reach two is allowed to declare fewer
-        only if `admission.gap_reason_coverage` records which categories are
-        reachable and why the rest are not. The shortfall then reads as a
-        recorded decision rather than an oversight.
+        `admission.gap_reason_coverage` records which categories are reachable
+        and why the rest are not, but it cannot waive the floor or claim admit.
         """
         for _, task in self.b_tier():
             reasons = task["library_policy"]["required_gap_reasons"]
@@ -925,7 +977,9 @@ class GapReasonVocabularyTests(unittest.TestCase):
                 self.assertIsNotNone(
                     coverage, f"{task['id']} declares {len(reasons)} category without saying why"
                 )
-                self.assertEqual(coverage["state"], "open")
+                self.assertEqual(task["admission"]["status"], "blocked_gap_coverage")
+                self.assertNotEqual(task["admission"].get("decision"), "admit")
+                self.assertEqual(coverage["state"], "blocked")
                 self.assertEqual(set(coverage["reachable"]), set(reasons))
                 self.assertTrue(coverage["basis"])
 

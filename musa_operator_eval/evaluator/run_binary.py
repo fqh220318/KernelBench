@@ -39,6 +39,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -666,8 +667,24 @@ def run_binary_case(
         output_dir.mkdir(parents=True, exist_ok=True)
         started = time.perf_counter()
         try:
+            command = [
+                str(binary), str(input_dir), str(output_dir),
+                "--warmup", str(max(0, warmup)), "--repeat", str(max(1, repeat)),
+            ]
+            # Windows does not execute a shebang script directly. The production
+            # runner is a native binary, but CPU-only tests intentionally use a
+            # frozen Python stand-in with the same ABI; invoke that stand-in with
+            # this interpreter without changing native-runner behaviour.
+            if os.name == "nt":
+                try:
+                    with binary.open("rb") as stream:
+                        first_line = stream.readline(200).lower()
+                except OSError:
+                    first_line = b""
+                if first_line.startswith(b"#!") and b"python" in first_line:
+                    command.insert(0, sys.executable)
             completed = subprocess.run(
-                [str(binary), str(input_dir), str(output_dir), "--warmup", str(max(0, warmup)), "--repeat", str(max(1, repeat))],
+                command,
                 capture_output=True, text=True, timeout=timeout, env=environment,
             )
         except (OSError, subprocess.SubprocessError) as error:
@@ -801,6 +818,76 @@ def check_trace(policy: dict, case: dict, trace_path: Path) -> Tuple[Optional[bo
     return (not errors), errors
 
 
+def evaluate_case_stages(cases: List[dict], run_one, run_task) -> Tuple[List[dict], int, List[dict]]:
+    """Run compiled cases in §4.7 order and short-circuit later stages.
+
+    ``run_one`` owns staging and process execution for a single case. Keeping the
+    scheduler separate makes the important rule testable without a compiler or a
+    MUSA device: all cases in the current stage run, and no case in a later stage
+    runs after that stage has failed.
+    """
+    rows: List[dict] = []
+    stage_results: List[dict] = []
+    exit_code = exit_codes.EXIT_OK
+    failed_stage = None
+
+    for stage in run_task.CASE_STAGE_ORDER:
+        stage_cases = [case for case in cases if run_task.stage_for_case(case) == stage]
+        if not stage_cases:
+            stage_results.append({"stage": stage, "status": "not_present", "cases": 0})
+            continue
+        if failed_stage is not None:
+            for case in stage_cases:
+                rows.append(
+                    {
+                        "case_id": case.get("case_id"),
+                        "tag": case.get("tag"),
+                        "stage": stage,
+                        "skipped": True,
+                        "reason": (
+                            f"not evaluated: the {failed_stage} stage failed, and {stage} comes after it"
+                        ),
+                    }
+                )
+            stage_results.append(
+                {"stage": stage, "status": "skipped", "cases": len(stage_cases)}
+            )
+            continue
+
+        stage_rows = []
+        for case in stage_cases:
+            row = run_one(case)
+            row["tag"] = case.get("tag")
+            row["stage"] = stage
+            stage_rows.append(row)
+            rows.append(row)
+
+        failed_rows = [row for row in stage_rows if not row.get("passed")]
+        if not failed_rows:
+            stage_results.append(
+                {"stage": stage, "status": "passed", "cases": len(stage_rows)}
+            )
+            continue
+
+        failed_stage = stage
+        stage_results.append(
+            {
+                "stage": stage,
+                "status": "failed",
+                "cases": len(stage_rows),
+                "failed": len(failed_rows),
+            }
+        )
+        if any(row.get("dispatch_trace_passed") is False for row in failed_rows):
+            exit_code = exit_codes.EXIT_DISPATCH_TRACE_MISMATCH
+        elif any(row.get("stability", {}).get("agrees") is False for row in failed_rows):
+            exit_code = exit_codes.EXIT_STABILITY_FAILED
+        else:
+            exit_code = run_task.STAGE_EXIT_CODES[stage]
+
+    return rows, exit_code, stage_results
+
+
 def evaluate_binary_task(
     task_dir: Path,
     submission: Path,
@@ -812,6 +899,7 @@ def evaluate_binary_task(
     verbose: bool = False,
     warmup: int = DEFAULT_WARMUP,
     repeat: int = DEFAULT_REPEAT,
+    generalization_seed: Optional[int] = None,
 ) -> Tuple[int, dict]:
     """Drive the compiled path through §4.7's stages and return (exit code, report)."""
     report: dict = {
@@ -830,6 +918,7 @@ def evaluate_binary_task(
         return fail(report, exit_codes.EXIT_INPUT_UNAVAILABLE, [f"the task contract could not be read: {error}"])
     report["task_id"] = task.get("id")
     report["tier"] = task.get("tier")
+    report["task_admission"] = task.get("admission")
     report["submission"] = str(submission)
     report["build"] = {"build_dir": str(build_dir)}
 
@@ -846,6 +935,10 @@ def evaluate_binary_task(
             exit_codes.EXIT_PRECISION_CONTRACT_MISMATCH,
             [f"the tensor contract permits {permitted} and the run asked for {precision}"],
         )
+    admission_errors = run_task.admission_readiness_errors(task)
+    if admission_errors:
+        report["admission"] = {"passed": False, "errors": admission_errors}
+        return fail(report, exit_codes.EXIT_TASK_NOT_ADMITTED, admission_errors)
     report["stages"].append("environment")
     environment = run_task.environment_stage(task)
     report["environment"] = environment
@@ -857,23 +950,51 @@ def evaluate_binary_task(
         manifest = json.loads(Path(cases_manifest).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         return fail(report, exit_codes.EXIT_INPUT_UNAVAILABLE, [f"the case manifest could not be read: {error}"])
+    try:
+        runtime_probe = run_task.materialize_runtime_generalization(
+            task, manifest, generated_dir, task_dir, generalization_seed
+        )
+    except (OSError, ValueError, RuntimeError, ImportError) as error:
+        return fail(
+            report, exit_codes.EXIT_CASE_GENERATION_FAILED,
+            [f"runtime generalization probe failed: {error}"],
+        )
+    runtime_manifest_dir = None
+    if runtime_probe:
+        report["generalization_probe"] = runtime_probe
+        # State materialisation consumes a manifest path, but the realised probe
+        # must not become a reusable hidden list. Keep that bridge in a temporary
+        # directory for this evaluation only; the report is the durable replay
+        # record containing the runtime seed and shape.
+        runtime_manifest_dir = tempfile.TemporaryDirectory(prefix="musa_runtime_probe_")
+        runtime_manifest = Path(runtime_manifest_dir.name) / "cases.runtime.json"
+        runtime_manifest.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        cases_manifest = runtime_manifest
     cases = manifest.get("cases", [])
     report["case_sources"] = [str(cases_manifest)]
 
     kernel_source = submission / "kernel.mu"
     if not kernel_source.is_file():
+        if runtime_manifest_dir is not None:
+            runtime_manifest_dir.cleanup()
         return fail(report, exit_codes.EXIT_INPUT_UNAVAILABLE, [f"no kernel.mu under {submission}"])
 
     report["stages"].append("static_audit")
     findings = audit_compiled_source(task, kernel_source.read_text(encoding="utf-8"))
     report["static_audit"] = {"passed": not findings, "errors": findings}
     if findings:
+        if runtime_manifest_dir is not None:
+            runtime_manifest_dir.cleanup()
         return fail(report, exit_codes.EXIT_STATIC_AUDIT_FORBIDDEN_API, findings)
 
-    return _build_check_and_evaluate(
-        task, task_dir, submission, build_dir, generated_dir, cases, Path(cases_manifest), report,
-        stability_reruns, verbose, warmup, repeat,
-    )
+    try:
+        return _build_check_and_evaluate(
+            task, task_dir, submission, build_dir, generated_dir, cases, Path(cases_manifest), report,
+            stability_reruns, verbose, warmup, repeat,
+        )
+    finally:
+        if runtime_manifest_dir is not None:
+            runtime_manifest_dir.cleanup()
 
 
 def _build_check_and_evaluate(
@@ -923,8 +1044,8 @@ def _build_check_and_evaluate(
     tolerance = resolve_case_tolerance(task, report.get("precision") or DEFAULT_PRECISION)
     report["tolerance_used"] = tolerance
     stage_root = build_dir / "cases"
-    rows = []
-    for case in cases:
+
+    def run_one(case: dict) -> dict:
         if verbose:
             print(f"[binary] {case['case_id']}", file=sys.stderr)
         try:
@@ -933,47 +1054,42 @@ def _build_check_and_evaluate(
                 report.get("precision") or DEFAULT_PRECISION,
             )
         except StagingError as error:
-            return fail(
-                report,
-                exit_codes.EXIT_CASE_GENERATION_FAILED,
-                [f"{case['case_id']}: {error}"],
-            )
-        rows.append(
-            run_binary_case(
-                task,
-                binary,
-                case,
-                generated_dir,
-                stability_reruns=stability_reruns,
-                tolerance=tolerance,
-                input_dir=case_inputs,
-                model_state=model_state,
-                warmup=warmup,
-                repeat=repeat,
-            )
+            raise StagingError(f"{case['case_id']}: {error}") from error
+        return run_binary_case(
+            task,
+            binary,
+            case,
+            generated_dir,
+            stability_reruns=stability_reruns,
+            tolerance=tolerance,
+            input_dir=case_inputs,
+            model_state=model_state,
+            warmup=warmup,
+            repeat=repeat,
         )
-    report["cases"] = rows
 
-    failed = [row for row in rows if not row.get("passed")]
-    passed_count = len(rows) - len(failed)
+    try:
+        rows, case_exit_code, evaluation_stages = evaluate_case_stages(cases, run_one, run_task)
+    except StagingError as error:
+        return fail(report, exit_codes.EXIT_CASE_GENERATION_FAILED, [str(error)])
+    report["cases"] = rows
+    report["evaluation_stages"] = evaluation_stages
+
+    failed = [row for row in rows if not row.get("passed") and not row.get("skipped")]
+    skipped = [row for row in rows if row.get("skipped")]
+    passed_count = len(rows) - len(failed) - len(skipped)
     report["summary"] = {
         "cases": len(rows),
         "passed": passed_count,
         "failed": len(failed),
-        "skipped": len([row for row in rows if row.get("skipped")]),
+        "skipped": len(skipped),
     }
-    if not failed:
+    if not failed and not skipped:
         report["summary"]["exit_code"] = exit_codes.EXIT_OK
         report["summary"]["passed_overall"] = True
         return exit_codes.EXIT_OK, report
 
-    code = exit_codes.EXIT_CORRECTNESS_FAILED
-    if any(not row.get("stability", {}).get("agrees", True) for row in failed):
-        code = exit_codes.EXIT_STABILITY_FAILED
-    elif any(row.get("dispatch_trace_passed") is False for row in failed):
-        code = exit_codes.EXIT_DISPATCH_TRACE_MISMATCH
-    elif all(row.get("tag") == "boundary" for row in failed):
-        code = exit_codes.EXIT_BOUNDARY_FAILED
+    code = case_exit_code or exit_codes.EXIT_SUMMARY_FAILED
     report["summary"]["exit_code"] = code
     report["summary"]["passed_overall"] = False
     report["summary"]["errors"] = [f"{row['case_id']}: {row.get('errors', row.get('reason', 'failed'))}" for row in failed]
@@ -989,6 +1105,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--build-dir", default=None)
     parser.add_argument("--precision", default=DEFAULT_PRECISION)
     parser.add_argument("--stability-reruns", type=int, default=1)
+    parser.add_argument(
+        "--generalization-seed", type=int, default=None,
+        help="replay one runtime generalization sample; omitted uses runtime entropy",
+    )
     # The framework's own protocol: ten calls to settle, then a hundred measurements
     # (kernelbench's `num_correct_trials`/`num_perf_trials`). Matching it is what makes
     # a compiled number and a Python number the same kind of number.
@@ -1011,6 +1131,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         verbose=arguments.verbose,
         warmup=arguments.warmup,
         repeat=arguments.repeat,
+        generalization_seed=arguments.generalization_seed,
     )
     text = json.dumps(report, indent=2, ensure_ascii=False)
     if arguments.output:

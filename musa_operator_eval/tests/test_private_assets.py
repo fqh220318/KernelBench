@@ -28,6 +28,13 @@ REPO_TOP = ROOT.parent
 PRIVATE_PREFIX = "musa_operator_eval/private/"
 PRIVATE_README = PRIVATE_PREFIX + "README.md"
 
+_READINESS_SPEC = importlib.util.spec_from_file_location(
+    "private_asset_baseline_readiness", ROOT / "evaluator" / "baseline_readiness.py"
+)
+baseline_readiness = importlib.util.module_from_spec(_READINESS_SPEC)
+assert _READINESS_SPEC.loader is not None
+_READINESS_SPEC.loader.exec_module(baseline_readiness)
+
 # A path that must be ignored if the rule is in place. It does not have to exist:
 # `git check-ignore` answers from the pattern, not the filesystem.
 PROBE_UNDER_PRIVATE = PRIVATE_PREFIX + "sdpa_forward_b_v0/expert/model_new.py"
@@ -163,11 +170,41 @@ class AgentPackageAuditTests(unittest.TestCase):
         findings = self.audit.audit_package(self.package)["findings"]
         self.assertTrue(any("neither editable nor frozen" in finding for finding in findings), findings)
 
+    def _write_public_manifests(self):
+        public = json.loads((self.package / "public_cases.json").read_text(encoding="utf-8"))
+        for case in public["cases"]:
+            for direction in ("input", "golden"):
+                directory = self.package / "generated" / case["case_id"] / direction
+                directory.mkdir(parents=True, exist_ok=True)
+                (directory / "tensors.json").write_text('{"tensors": []}\n', encoding="utf-8")
+
+    def test_release_mode_requires_every_public_input_and_golden(self):
+        findings = self.audit.audit_package(self.package, require_public_data=True)["findings"]
+        self.assertTrue(any("public self-test data is missing" in finding for finding in findings), findings)
+
+    def test_declared_public_goldens_are_agent_visible(self):
+        self._write_public_manifests()
+        report = self.audit.audit_package(self.package, require_public_data=True)
+        self.assertTrue(report["passed"], report["findings"])
+
+    def test_generated_data_for_an_unknown_case_is_caught(self):
+        directory = self.package / "generated" / "hidden_001" / "golden"
+        directory.mkdir(parents=True)
+        (directory / "tensors.json").write_text('{"tensors": []}\n', encoding="utf-8")
+        findings = self.audit.audit_package(self.package)["findings"]
+        self.assertTrue(any("no declared public case" in finding for finding in findings), findings)
+
+    def test_a_golden_outside_public_generated_data_is_caught(self):
+        directory = self.package / "golden"
+        directory.mkdir()
+        (directory / "answer.bin").write_bytes(b"answer")
+        findings = self.audit.audit_package(self.package)["findings"]
+        self.assertTrue(any("golden outside a declared public case" in finding for finding in findings), findings)
+
 
 @unittest.skipUnless(MAINTAINER_TREE_MOUNTED, "the maintainer tree is not mounted: the gap evidence is a hidden asset")
 class GapCoverageTests(unittest.TestCase):
-    """§4.3 wants at least two gap reason categories; when a task cannot reach two,
-    the reason has to be recorded, with every other category accounted for."""
+    """§4.3 requires two gap categories; a one-category task remains blocked."""
 
     CATEGORIES = {"unsupported_shape", "semantic_mismatch", "layout_mismatch", "multi_operator_required"}
 
@@ -192,7 +229,7 @@ class GapCoverageTests(unittest.TestCase):
                 evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
                 block = evidence.get("exactly_one_reason_category")
                 self.assertIsNotNone(block, f"{directory.name}: no exactly_one_reason_category block")
-                self.assertEqual(block["state"], "open")
+                self.assertEqual(block["state"], "blocked")
                 argued = set(block["why_the_others_are_out_of_reach"])
                 self.assertEqual(
                     argued,
@@ -226,7 +263,7 @@ class GapCoverageTests(unittest.TestCase):
                     self.assertIsNone(coverage, "a task that reaches two categories carries a shortfall block")
                     continue
                 self.assertIsNotNone(coverage, f"{task_id}: the contract records no coverage")
-                self.assertEqual(coverage["state"], "open")
+                self.assertEqual(coverage["state"], "blocked")
                 self.assertEqual(sorted(coverage["reachable"]), sorted(reasons))
                 self.assertEqual(sorted(coverage["unreachable"]), sorted(self.CATEGORIES - reasons))
                 self.assertGreater(len(coverage["basis"]), 100, f"{task_id}: the basis is a stub")
@@ -306,6 +343,10 @@ class CompiledAnswerScopeTests(unittest.TestCase):
                 self.assertIsInstance(cpp["case_configuration"].get("args"), list)
 
 
+@unittest.skipUnless(
+    MAINTAINER_TREE_MOUNTED,
+    "the maintainer tree is not mounted: the hidden lists and baselines live only there",
+)
 class HiddenCaseListTests(unittest.TestCase):
     """§4.3: every package is graded on a hidden list, and the list follows the rules.
 
@@ -348,7 +389,10 @@ class HiddenCaseListTests(unittest.TestCase):
                 covered = tags | ({"boundary", "non_aligned", "extreme"} if "image" in
                                   next(iter(manifest["cases"]))["shape"] else set())
                 self.assertTrue(required <= covered, f"{task['id']} covers {sorted(tags)}")
-                self.assertIn("generalization", tags)
+                self.assertNotIn("generalization", tags)
+                policy = manifest.get("generalization_probe")
+                self.assertIsInstance(policy, dict, f"{task['id']} has no runtime probe policy")
+                self.assertEqual(policy.get("seed_source"), "runtime_entropy")
 
     def test_no_hidden_case_repeats_a_public_one_and_no_seed_is_shared(self):
         for directory, task in self.packages():
@@ -373,10 +417,21 @@ class HiddenCaseListTests(unittest.TestCase):
                 self.assertTrue(path.is_file(), f"{task['id']} has no baseline record")
                 baseline = json.loads(path.read_text(encoding="utf-8"))
                 for field in ("environment_snapshot", "measurement_protocol", "implementations",
-                              "results", "scoring", "tolerance_source"):
+                              "results", "scoring", "tolerance_source", "readiness"):
                     self.assertIn(field, baseline, f"{task['id']}'s baseline has no {field}")
                 self.assertEqual(baseline["task_id"], task["id"])
                 self.assertEqual(baseline["tier"], task["tier"])
+                manifest = json.loads(self.manifest_for(task).read_text(encoding="utf-8"))
+                expected_case_ids = [case["case_id"] for case in manifest["cases"]]
+                readiness_errors = baseline_readiness.declared_readiness_errors(
+                    baseline, expected_case_ids
+                )
+                self.assertEqual(readiness_errors, [], f"{task['id']}: {readiness_errors}")
+                self.assertEqual(
+                    baseline["readiness"]["status"],
+                    "complete",
+                    f"{task['id']} cannot be admitted or ranked with an incomplete §4.4 roster",
+                )
                 # §4.4 asks for a quantile and a throughput per performance case,
                 # not a single number.
                 measured = [row for row in baseline["results"] if row.get("latency_ms")]
@@ -414,58 +469,17 @@ class HiddenCaseListTests(unittest.TestCase):
                     self.assertEqual(row["latency_ms_stats"]["mean"], row["latency_ms"])
                     self.assertEqual(row["latency_ms_stats"]["num_trials"], len(samples))
 
-    def test_an_a_tier_library_row_is_measured_wherever_the_family_has_a_b_track(self):
-        """§4.4's roster, checked against the thing that decides whether it can be built.
-
-        The A tier's roster names `torch_musa_sdpa` and `mudnn_fused` alongside its own
-        implementations. Those rows used to carry one shared reason -- "the tier is
-        graded at float32, where the fused path does not answer" -- which is true of the
-        fused kernel and false of the library's entry point: at float32
-        `F.scaled_dot_product_attention` answers, through
-        `aten::_scaled_dot_product_attention_math_musa`. So the rule is:
-
-        * `mudnn_fused` is unbuildable on this tier, and its reason has to be the
-          measurement rather than a claim about the tier (the library's own words are
-          "Unsupport Type FLOAT");
-        * a family whose ledger entry has a B track has a library implementation this
-          repository can run, so `torch_musa_sdpa` must be a measured row there;
-        * a family whose ledger entry has no B track records why, quoting the ledger
-          rather than the tier's precision.
-        """
-        ledger = {
-            entry["entry_id"]: entry
-            for entry in json.loads((ROOT / "sets" / "attention" / "attention_set.json").read_text(encoding="utf-8"))["entries"]
-        }
-        checked = 0
+    def test_every_a_tier_baseline_uses_the_canonical_four_role_roster(self):
+        """Historical device limitations may not redefine §4.4's required roles."""
         for _directory, task in self.packages():
             if task["tier"] != "A_kernel":
                 continue
-            entry = ledger[task["set_entry"].split("/")[-1]]
             baseline = json.loads((self.PRIVATE / task["id"] / "baseline.hidden.json").read_text(encoding="utf-8"))
-            statuses = {}
-            reasons = {}
-            for row in baseline["results"]:
-                statuses.setdefault(row["implementation"], set()).add(row["status"])
-                if row.get("reason"):
-                    reasons.setdefault(row["implementation"], row["reason"])
             with self.subTest(task=task["id"]):
-                fused = reasons.get("mudnn_fused", "")
-                self.assertIn("Unsupport Type FLOAT", fused,
-                              f"{task['id']} does not record the measured reason the fused op gives for FLOAT")
-                self.assertIn("measured", fused, f"{task['id']}'s fused reason is not a measurement")
-                library = statuses.get("torch_musa_sdpa", set())
-                if entry["tier"]["B_library"].get("eligible"):
-                    self.assertIn("pass", library,
-                                  f"{task['id']} has a B track, so the library's entry point answers this "
-                                  f"family and its row has to be measured rather than unavailable: {library}")
-                else:
-                    self.assertEqual(library, {"unavailable"},
-                                     f"{task['id']} has no B track, so a measured library row would be a "
-                                     f"different operator: {library}")
-                    self.assertIn("ledger", reasons.get("torch_musa_sdpa", ""),
-                                  f"{task['id']} should quote the ledger's reason for having no B track")
-            checked += 1
-        self.assertEqual(checked, 6, "the A tier has six packages")
+                self.assertEqual(
+                    baseline["readiness"]["required_roles"],
+                    list(baseline_readiness.COMMON_REQUIRED_ROLES),
+                )
 
     def test_every_package_names_the_denominator_its_tier_is_scored_against(self):
         """§4.4: the A tier's is the upstream implementation, the B tier's the expert."""
