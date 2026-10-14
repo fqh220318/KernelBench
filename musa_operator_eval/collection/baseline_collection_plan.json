@@ -1,0 +1,716 @@
+{
+  "schema_version": "1.0.0",
+  "purpose": "redacted §4.4 baseline collection inventory",
+  "redaction": "Contains no hidden case ids, shapes, seeds, goldens, measurements or private failure reasons.",
+  "hardware_required_to_collect": true,
+  "summary": {
+    "task_count": 11,
+    "by_collection_status": {
+      "not_collected": 3,
+      "not_scheduled": 8
+    },
+    "by_priority": {
+      "inactive_current_contract": 8,
+      "release_blocker": 3
+    }
+  },
+  "tasks": [
+    {
+      "task_id": "scaled_dot_product_attention_a_v0",
+      "tier": "A_kernel",
+      "package": "musa_operator_eval/tasks/kb_l1_97_a",
+      "required_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa",
+        "torch_musa_eager"
+      ],
+      "automatic_roles": [
+        "torch_musa_eager"
+      ],
+      "collection_priority": "inactive_current_contract",
+      "collection_action": "retain_research_evidence_no_hardware_collection",
+      "lifecycle_decision": "research_only",
+      "private_manifest_present": false,
+      "baseline_path": "musa_operator_eval/private/scaled_dot_product_attention_a_v0/baseline.hidden.json",
+      "baseline_present": false,
+      "command_template": [
+        "python",
+        "musa_operator_eval/evaluator/measure_baseline.py",
+        "--task-dir",
+        "musa_operator_eval/tasks/kb_l1_97_a",
+        "--cases",
+        "musa_operator_eval/private/scaled_dot_product_attention_a_v0/cases.private.json",
+        "--tier",
+        "A_kernel",
+        "--implementation",
+        "upstream_musa=KernelBench/level1_musa/problem_97/model_new.py",
+        "--implementation",
+        "mudnn_fused=<path-to-mudnn_fused-ModelNew-module>",
+        "--implementation",
+        "torch_musa_sdpa=<path-to-torch_musa_sdpa-ModelNew-module>",
+        "--output",
+        "musa_operator_eval/private/scaled_dot_product_attention_a_v0/baseline.hidden.json"
+      ],
+      "resolved_public_implementations": {
+        "upstream_musa": "KernelBench/level1_musa/problem_97/model_new.py"
+      },
+      "unresolved_common_roles": [
+        "mudnn_fused",
+        "torch_musa_sdpa"
+      ],
+      "collection_status": "not_scheduled",
+      "evidence_complete": false,
+      "scoreable": false,
+      "release_ready": false,
+      "missing_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa",
+        "torch_musa_eager"
+      ],
+      "unavailable_roles": [],
+      "nonpassing_roles": [],
+      "issue_codes": [
+        "inactive_current_contract"
+      ]
+    },
+    {
+      "task_id": "scaled_dot_product_attention_b_v0",
+      "tier": "B_library",
+      "package": "musa_operator_eval/tasks/kb_l1_97_b",
+      "required_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa",
+        "torch_musa_eager",
+        "naive_library_composition",
+        "expert_dispatch"
+      ],
+      "automatic_roles": [
+        "torch_musa_eager"
+      ],
+      "collection_priority": "inactive_current_contract",
+      "collection_action": "retain_research_evidence_no_hardware_collection",
+      "lifecycle_decision": "research_only",
+      "private_manifest_present": false,
+      "baseline_path": "musa_operator_eval/private/scaled_dot_product_attention_b_v0/baseline.hidden.json",
+      "baseline_present": false,
+      "command_template": [
+        "python",
+        "musa_operator_eval/evaluator/measure_baseline.py",
+        "--task-dir",
+        "musa_operator_eval/tasks/kb_l1_97_b",
+        "--cases",
+        "musa_operator_eval/private/scaled_dot_product_attention_b_v0/cases.private.json",
+        "--tier",
+        "B_library",
+        "--naive",
+        "musa_operator_eval/private/scaled_dot_product_attention_b_v0/naive/model_new.py",
+        "--expert",
+        "musa_operator_eval/private/scaled_dot_product_attention_b_v0/expert/model_new.py",
+        "--implementation",
+        "upstream_musa=KernelBench/level1_musa/problem_97/model_new.py",
+        "--implementation",
+        "mudnn_fused=<path-to-mudnn_fused-ModelNew-module>",
+        "--implementation",
+        "torch_musa_sdpa=<path-to-torch_musa_sdpa-ModelNew-module>",
+        "--output",
+        "musa_operator_eval/private/scaled_dot_product_attention_b_v0/baseline.hidden.json"
+      ],
+      "resolved_public_implementations": {
+        "upstream_musa": "KernelBench/level1_musa/problem_97/model_new.py"
+      },
+      "unresolved_common_roles": [
+        "mudnn_fused",
+        "torch_musa_sdpa"
+      ],
+      "collection_status": "not_scheduled",
+      "evidence_complete": false,
+      "scoreable": false,
+      "release_ready": false,
+      "missing_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa",
+        "torch_musa_eager",
+        "naive_library_composition",
+        "expert_dispatch"
+      ],
+      "unavailable_roles": [],
+      "nonpassing_roles": [],
+      "issue_codes": [
+        "inactive_current_contract"
+      ]
+    },
+    {
+      "task_id": "swin_transformer_v2_a_v0",
+      "tier": "A_kernel",
+      "package": "musa_operator_eval/tasks/kb_l3_30_a",
+      "required_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa",
+        "torch_musa_eager"
+      ],
+      "automatic_roles": [
+        "torch_musa_eager"
+      ],
+      "collection_priority": "release_blocker",
+      "collection_action": "collect_on_target_hardware",
+      "lifecycle_decision": "keep",
+      "private_manifest_present": false,
+      "baseline_path": "musa_operator_eval/private/swin_transformer_v2_a_v0/baseline.hidden.json",
+      "baseline_present": false,
+      "command_template": [
+        "python",
+        "musa_operator_eval/evaluator/measure_baseline.py",
+        "--task-dir",
+        "musa_operator_eval/tasks/kb_l3_30_a",
+        "--cases",
+        "musa_operator_eval/private/swin_transformer_v2_a_v0/cases.private.json",
+        "--tier",
+        "A_kernel",
+        "--implementation",
+        "upstream_musa=<path-to-upstream_musa-ModelNew-module>",
+        "--implementation",
+        "mudnn_fused=<path-to-mudnn_fused-ModelNew-module>",
+        "--implementation",
+        "torch_musa_sdpa=<path-to-torch_musa_sdpa-ModelNew-module>",
+        "--output",
+        "musa_operator_eval/private/swin_transformer_v2_a_v0/baseline.hidden.json"
+      ],
+      "resolved_public_implementations": {},
+      "unresolved_common_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa"
+      ],
+      "collection_status": "not_collected",
+      "evidence_complete": false,
+      "scoreable": false,
+      "release_ready": false,
+      "missing_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa",
+        "torch_musa_eager"
+      ],
+      "unavailable_roles": [],
+      "nonpassing_roles": [],
+      "issue_codes": [
+        "baseline_not_present"
+      ]
+    },
+    {
+      "task_id": "vision_attention_a_v0",
+      "tier": "A_kernel",
+      "package": "musa_operator_eval/tasks/kb_l3_31_a",
+      "required_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa",
+        "torch_musa_eager"
+      ],
+      "automatic_roles": [
+        "torch_musa_eager"
+      ],
+      "collection_priority": "inactive_current_contract",
+      "collection_action": "retain_research_evidence_no_hardware_collection",
+      "lifecycle_decision": "research_only",
+      "private_manifest_present": false,
+      "baseline_path": "musa_operator_eval/private/vision_attention_a_v0/baseline.hidden.json",
+      "baseline_present": false,
+      "command_template": [
+        "python",
+        "musa_operator_eval/evaluator/measure_baseline.py",
+        "--task-dir",
+        "musa_operator_eval/tasks/kb_l3_31_a",
+        "--cases",
+        "musa_operator_eval/private/vision_attention_a_v0/cases.private.json",
+        "--tier",
+        "A_kernel",
+        "--implementation",
+        "upstream_musa=KernelBench/level3_musa/problem_31/model_new.py",
+        "--implementation",
+        "mudnn_fused=<path-to-mudnn_fused-ModelNew-module>",
+        "--implementation",
+        "torch_musa_sdpa=<path-to-torch_musa_sdpa-ModelNew-module>",
+        "--output",
+        "musa_operator_eval/private/vision_attention_a_v0/baseline.hidden.json"
+      ],
+      "resolved_public_implementations": {
+        "upstream_musa": "KernelBench/level3_musa/problem_31/model_new.py"
+      },
+      "unresolved_common_roles": [
+        "mudnn_fused",
+        "torch_musa_sdpa"
+      ],
+      "collection_status": "not_scheduled",
+      "evidence_complete": false,
+      "scoreable": false,
+      "release_ready": false,
+      "missing_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa",
+        "torch_musa_eager"
+      ],
+      "unavailable_roles": [],
+      "nonpassing_roles": [],
+      "issue_codes": [
+        "inactive_current_contract"
+      ]
+    },
+    {
+      "task_id": "vision_attention_b_v0",
+      "tier": "B_library",
+      "package": "musa_operator_eval/tasks/kb_l3_31_b",
+      "required_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa",
+        "torch_musa_eager",
+        "naive_library_composition",
+        "expert_dispatch"
+      ],
+      "automatic_roles": [
+        "torch_musa_eager"
+      ],
+      "collection_priority": "inactive_current_contract",
+      "collection_action": "retain_research_evidence_no_hardware_collection",
+      "lifecycle_decision": "research_only",
+      "private_manifest_present": false,
+      "baseline_path": "musa_operator_eval/private/vision_attention_b_v0/baseline.hidden.json",
+      "baseline_present": false,
+      "command_template": [
+        "python",
+        "musa_operator_eval/evaluator/measure_baseline.py",
+        "--task-dir",
+        "musa_operator_eval/tasks/kb_l3_31_b",
+        "--cases",
+        "musa_operator_eval/private/vision_attention_b_v0/cases.private.json",
+        "--tier",
+        "B_library",
+        "--naive",
+        "musa_operator_eval/private/vision_attention_b_v0/naive/model_new.py",
+        "--expert",
+        "musa_operator_eval/private/vision_attention_b_v0/expert/model_new.py",
+        "--implementation",
+        "upstream_musa=KernelBench/level3_musa/problem_31/model_new.py",
+        "--implementation",
+        "mudnn_fused=<path-to-mudnn_fused-ModelNew-module>",
+        "--implementation",
+        "torch_musa_sdpa=<path-to-torch_musa_sdpa-ModelNew-module>",
+        "--output",
+        "musa_operator_eval/private/vision_attention_b_v0/baseline.hidden.json"
+      ],
+      "resolved_public_implementations": {
+        "upstream_musa": "KernelBench/level3_musa/problem_31/model_new.py"
+      },
+      "unresolved_common_roles": [
+        "mudnn_fused",
+        "torch_musa_sdpa"
+      ],
+      "collection_status": "not_scheduled",
+      "evidence_complete": false,
+      "scoreable": false,
+      "release_ready": false,
+      "missing_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa",
+        "torch_musa_eager",
+        "naive_library_composition",
+        "expert_dispatch"
+      ],
+      "unavailable_roles": [],
+      "nonpassing_roles": [],
+      "issue_codes": [
+        "inactive_current_contract"
+      ]
+    },
+    {
+      "task_id": "mingpt_causal_attention_a_v0",
+      "tier": "A_kernel",
+      "package": "musa_operator_eval/tasks/kb_l3_43_a",
+      "required_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa",
+        "torch_musa_eager"
+      ],
+      "automatic_roles": [
+        "torch_musa_eager"
+      ],
+      "collection_priority": "inactive_current_contract",
+      "collection_action": "retain_research_evidence_no_hardware_collection",
+      "lifecycle_decision": "research_only",
+      "private_manifest_present": false,
+      "baseline_path": "musa_operator_eval/private/mingpt_causal_attention_a_v0/baseline.hidden.json",
+      "baseline_present": false,
+      "command_template": [
+        "python",
+        "musa_operator_eval/evaluator/measure_baseline.py",
+        "--task-dir",
+        "musa_operator_eval/tasks/kb_l3_43_a",
+        "--cases",
+        "musa_operator_eval/private/mingpt_causal_attention_a_v0/cases.private.json",
+        "--tier",
+        "A_kernel",
+        "--implementation",
+        "upstream_musa=KernelBench/level3_musa/problem_43/model_new.py",
+        "--implementation",
+        "mudnn_fused=<path-to-mudnn_fused-ModelNew-module>",
+        "--implementation",
+        "torch_musa_sdpa=<path-to-torch_musa_sdpa-ModelNew-module>",
+        "--output",
+        "musa_operator_eval/private/mingpt_causal_attention_a_v0/baseline.hidden.json"
+      ],
+      "resolved_public_implementations": {
+        "upstream_musa": "KernelBench/level3_musa/problem_43/model_new.py"
+      },
+      "unresolved_common_roles": [
+        "mudnn_fused",
+        "torch_musa_sdpa"
+      ],
+      "collection_status": "not_scheduled",
+      "evidence_complete": false,
+      "scoreable": false,
+      "release_ready": false,
+      "missing_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa",
+        "torch_musa_eager"
+      ],
+      "unavailable_roles": [],
+      "nonpassing_roles": [],
+      "issue_codes": [
+        "inactive_current_contract"
+      ]
+    },
+    {
+      "task_id": "mingpt_causal_attention_b_v0",
+      "tier": "B_library",
+      "package": "musa_operator_eval/tasks/kb_l3_43_b",
+      "required_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa",
+        "torch_musa_eager",
+        "naive_library_composition",
+        "expert_dispatch"
+      ],
+      "automatic_roles": [
+        "torch_musa_eager"
+      ],
+      "collection_priority": "inactive_current_contract",
+      "collection_action": "retain_research_evidence_no_hardware_collection",
+      "lifecycle_decision": "research_only",
+      "private_manifest_present": false,
+      "baseline_path": "musa_operator_eval/private/mingpt_causal_attention_b_v0/baseline.hidden.json",
+      "baseline_present": false,
+      "command_template": [
+        "python",
+        "musa_operator_eval/evaluator/measure_baseline.py",
+        "--task-dir",
+        "musa_operator_eval/tasks/kb_l3_43_b",
+        "--cases",
+        "musa_operator_eval/private/mingpt_causal_attention_b_v0/cases.private.json",
+        "--tier",
+        "B_library",
+        "--naive",
+        "musa_operator_eval/private/mingpt_causal_attention_b_v0/naive/model_new.py",
+        "--expert",
+        "musa_operator_eval/private/mingpt_causal_attention_b_v0/expert/model_new.py",
+        "--implementation",
+        "upstream_musa=KernelBench/level3_musa/problem_43/model_new.py",
+        "--implementation",
+        "mudnn_fused=<path-to-mudnn_fused-ModelNew-module>",
+        "--implementation",
+        "torch_musa_sdpa=<path-to-torch_musa_sdpa-ModelNew-module>",
+        "--output",
+        "musa_operator_eval/private/mingpt_causal_attention_b_v0/baseline.hidden.json"
+      ],
+      "resolved_public_implementations": {
+        "upstream_musa": "KernelBench/level3_musa/problem_43/model_new.py"
+      },
+      "unresolved_common_roles": [
+        "mudnn_fused",
+        "torch_musa_sdpa"
+      ],
+      "collection_status": "not_scheduled",
+      "evidence_complete": false,
+      "scoreable": false,
+      "release_ready": false,
+      "missing_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa",
+        "torch_musa_eager",
+        "naive_library_composition",
+        "expert_dispatch"
+      ],
+      "unavailable_roles": [],
+      "nonpassing_roles": [],
+      "issue_codes": [
+        "inactive_current_contract"
+      ]
+    },
+    {
+      "task_id": "mingpt_block_a_v0",
+      "tier": "A_kernel",
+      "package": "musa_operator_eval/tasks/kb_l3_44_a",
+      "required_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa",
+        "torch_musa_eager"
+      ],
+      "automatic_roles": [
+        "torch_musa_eager"
+      ],
+      "collection_priority": "inactive_current_contract",
+      "collection_action": "retain_research_evidence_no_hardware_collection",
+      "lifecycle_decision": "research_only",
+      "private_manifest_present": false,
+      "baseline_path": "musa_operator_eval/private/mingpt_block_a_v0/baseline.hidden.json",
+      "baseline_present": false,
+      "command_template": [
+        "python",
+        "musa_operator_eval/evaluator/measure_baseline.py",
+        "--task-dir",
+        "musa_operator_eval/tasks/kb_l3_44_a",
+        "--cases",
+        "musa_operator_eval/private/mingpt_block_a_v0/cases.private.json",
+        "--tier",
+        "A_kernel",
+        "--implementation",
+        "upstream_musa=KernelBench/level3_musa/problem_44/model_new.py",
+        "--implementation",
+        "mudnn_fused=<path-to-mudnn_fused-ModelNew-module>",
+        "--implementation",
+        "torch_musa_sdpa=<path-to-torch_musa_sdpa-ModelNew-module>",
+        "--output",
+        "musa_operator_eval/private/mingpt_block_a_v0/baseline.hidden.json"
+      ],
+      "resolved_public_implementations": {
+        "upstream_musa": "KernelBench/level3_musa/problem_44/model_new.py"
+      },
+      "unresolved_common_roles": [
+        "mudnn_fused",
+        "torch_musa_sdpa"
+      ],
+      "collection_status": "not_scheduled",
+      "evidence_complete": false,
+      "scoreable": false,
+      "release_ready": false,
+      "missing_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa",
+        "torch_musa_eager"
+      ],
+      "unavailable_roles": [],
+      "nonpassing_roles": [],
+      "issue_codes": [
+        "inactive_current_contract"
+      ]
+    },
+    {
+      "task_id": "mingpt_block_b_v0",
+      "tier": "B_library",
+      "package": "musa_operator_eval/tasks/kb_l3_44_b",
+      "required_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa",
+        "torch_musa_eager",
+        "naive_library_composition",
+        "expert_dispatch"
+      ],
+      "automatic_roles": [
+        "torch_musa_eager"
+      ],
+      "collection_priority": "inactive_current_contract",
+      "collection_action": "retain_research_evidence_no_hardware_collection",
+      "lifecycle_decision": "research_only",
+      "private_manifest_present": false,
+      "baseline_path": "musa_operator_eval/private/mingpt_block_b_v0/baseline.hidden.json",
+      "baseline_present": false,
+      "command_template": [
+        "python",
+        "musa_operator_eval/evaluator/measure_baseline.py",
+        "--task-dir",
+        "musa_operator_eval/tasks/kb_l3_44_b",
+        "--cases",
+        "musa_operator_eval/private/mingpt_block_b_v0/cases.private.json",
+        "--tier",
+        "B_library",
+        "--naive",
+        "musa_operator_eval/private/mingpt_block_b_v0/naive/model_new.py",
+        "--expert",
+        "musa_operator_eval/private/mingpt_block_b_v0/expert/model_new.py",
+        "--implementation",
+        "upstream_musa=KernelBench/level3_musa/problem_44/model_new.py",
+        "--implementation",
+        "mudnn_fused=<path-to-mudnn_fused-ModelNew-module>",
+        "--implementation",
+        "torch_musa_sdpa=<path-to-torch_musa_sdpa-ModelNew-module>",
+        "--output",
+        "musa_operator_eval/private/mingpt_block_b_v0/baseline.hidden.json"
+      ],
+      "resolved_public_implementations": {
+        "upstream_musa": "KernelBench/level3_musa/problem_44/model_new.py"
+      },
+      "unresolved_common_roles": [
+        "mudnn_fused",
+        "torch_musa_sdpa"
+      ],
+      "collection_status": "not_scheduled",
+      "evidence_complete": false,
+      "scoreable": false,
+      "release_ready": false,
+      "missing_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa",
+        "torch_musa_eager",
+        "naive_library_composition",
+        "expert_dispatch"
+      ],
+      "unavailable_roles": [],
+      "nonpassing_roles": [],
+      "issue_codes": [
+        "inactive_current_contract"
+      ]
+    },
+    {
+      "task_id": "relu_causal_attention_a_v0",
+      "tier": "A_kernel",
+      "package": "musa_operator_eval/tasks/kb_l3_50_a",
+      "required_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa",
+        "torch_musa_eager"
+      ],
+      "automatic_roles": [
+        "torch_musa_eager"
+      ],
+      "collection_priority": "release_blocker",
+      "collection_action": "collect_on_target_hardware",
+      "lifecycle_decision": "keep",
+      "private_manifest_present": false,
+      "baseline_path": "musa_operator_eval/private/relu_causal_attention_a_v0/baseline.hidden.json",
+      "baseline_present": false,
+      "command_template": [
+        "python",
+        "musa_operator_eval/evaluator/measure_baseline.py",
+        "--task-dir",
+        "musa_operator_eval/tasks/kb_l3_50_a",
+        "--cases",
+        "musa_operator_eval/private/relu_causal_attention_a_v0/cases.private.json",
+        "--tier",
+        "A_kernel",
+        "--implementation",
+        "upstream_musa=<path-to-upstream_musa-ModelNew-module>",
+        "--implementation",
+        "mudnn_fused=<path-to-mudnn_fused-ModelNew-module>",
+        "--implementation",
+        "torch_musa_sdpa=<path-to-torch_musa_sdpa-ModelNew-module>",
+        "--output",
+        "musa_operator_eval/private/relu_causal_attention_a_v0/baseline.hidden.json"
+      ],
+      "resolved_public_implementations": {},
+      "unresolved_common_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa"
+      ],
+      "collection_status": "not_collected",
+      "evidence_complete": false,
+      "scoreable": false,
+      "release_ready": false,
+      "missing_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa",
+        "torch_musa_eager"
+      ],
+      "unavailable_roles": [],
+      "nonpassing_roles": [],
+      "issue_codes": [
+        "baseline_not_present"
+      ]
+    },
+    {
+      "task_id": "sdpa_forward_b_v0",
+      "tier": "B_library",
+      "package": "musa_operator_eval/tasks/sdpa_forward_pilot",
+      "required_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa",
+        "torch_musa_eager",
+        "naive_library_composition",
+        "expert_dispatch"
+      ],
+      "automatic_roles": [
+        "torch_musa_eager"
+      ],
+      "collection_priority": "release_blocker",
+      "collection_action": "collect_on_target_hardware",
+      "lifecycle_decision": "keep",
+      "private_manifest_present": false,
+      "baseline_path": "musa_operator_eval/private/sdpa_forward_b_v0/baseline.hidden.json",
+      "baseline_present": false,
+      "command_template": [
+        "python",
+        "musa_operator_eval/evaluator/measure_baseline.py",
+        "--task-dir",
+        "musa_operator_eval/tasks/sdpa_forward_pilot",
+        "--cases",
+        "musa_operator_eval/private/sdpa_forward_b_v0/cases.private.json",
+        "--tier",
+        "B_library",
+        "--naive",
+        "musa_operator_eval/private/sdpa_forward_b_v0/naive/model_new.py",
+        "--expert",
+        "musa_operator_eval/private/sdpa_forward_b_v0/expert/model_new.py",
+        "--implementation",
+        "upstream_musa=<path-to-upstream_musa-ModelNew-module>",
+        "--implementation",
+        "mudnn_fused=<path-to-mudnn_fused-ModelNew-module>",
+        "--implementation",
+        "torch_musa_sdpa=<path-to-torch_musa_sdpa-ModelNew-module>",
+        "--output",
+        "musa_operator_eval/private/sdpa_forward_b_v0/baseline.hidden.json"
+      ],
+      "resolved_public_implementations": {},
+      "unresolved_common_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa"
+      ],
+      "collection_status": "not_collected",
+      "evidence_complete": false,
+      "scoreable": false,
+      "release_ready": false,
+      "missing_roles": [
+        "upstream_musa",
+        "mudnn_fused",
+        "torch_musa_sdpa",
+        "torch_musa_eager",
+        "naive_library_composition",
+        "expert_dispatch"
+      ],
+      "unavailable_roles": [],
+      "nonpassing_roles": [],
+      "issue_codes": [
+        "baseline_not_present"
+      ]
+    }
+  ]
+}
