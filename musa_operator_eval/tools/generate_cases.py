@@ -233,7 +233,31 @@ def reference_golden(
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         entrypoint = getattr(module, oracle["entrypoint"])
-        produced = entrypoint(*inputs, **(case.get("attributes") or {}))
+        context = {}
+        requested_context = set(oracle.get("context") or [])
+        if "case_seed" in requested_context:
+            context["case_seed"] = int(case["seed"])
+        if "init_inputs" in requested_context:
+            context["init_inputs"] = list(namespace["get_init_inputs"]())
+        if "model_state" in requested_context:
+            # Parameter initializers are part of the public constructor ABI, not
+            # part of the operator oracle.  Export the deterministically seeded
+            # state once, then let the independent CPU reference perform every
+            # numerical operation itself.
+            set_seed(case["seed"])
+            init_inputs = namespace["get_init_inputs"]()
+            with torch.no_grad():
+                set_seed(case["seed"])
+                model = namespace["Model"](*init_inputs).eval()
+            context["model_state"] = {
+                name: value.detach().cpu().numpy().copy()
+                for name, value in model.state_dict().items()
+            }
+        produced = entrypoint(
+            *inputs,
+            **(case.get("attributes") or {}),
+            **context,
+        )
         values = list(produced) if isinstance(produced, (tuple, list)) else [produced]
         names = list(oracle["returns"])
         if len(names) != len(values):
