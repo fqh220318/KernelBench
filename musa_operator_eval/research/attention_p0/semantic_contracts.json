@@ -1,0 +1,81 @@
+{
+  "schema_version": "1.0.0",
+  "stage": "pre_task_cpu_contract",
+  "hardware_validated": false,
+  "numeric_reference": {
+    "implementation": "musa_operator_eval/research/attention_p0/cpu_reference.py",
+    "compute_dtype": "float64",
+    "default_scale": "1/sqrt(head_dim)",
+    "fully_masked_row": {"output": "zeros", "lse": "-inf"}
+  },
+  "contracts": [
+    {
+      "candidate_id": "attention_per_sequence_causal_dispatch",
+      "entrypoint": "per_sequence_causal_reference",
+      "input_layout": {
+        "q": "BSHD",
+        "k": "BSHD",
+        "v": "BSHD",
+        "q_lens": "B",
+        "kv_lens": "B",
+        "causal_flags": "B bool"
+      },
+      "output_layout": {"output": "BSHD", "lse": "BSH"},
+      "semantics": {
+        "causal_granularity": "one independent boolean per batch sequence",
+        "causal_alignment": "bottom_right",
+        "gqa_mapping": "query_head // (heads_q / heads_kv)",
+        "padding": "rows beyond q_lens are zero with -inf lse",
+        "zero_kv": "valid query rows are fully masked",
+        "cache_mutation": "none"
+      },
+      "excluded": ["dropout", "bias", "local_window", "cache_append"],
+      "tier_hypothesis": {"A": "promising", "B": "promising"}
+    },
+    {
+      "candidate_id": "attention_varlen_packed_forward",
+      "entrypoint": "varlen_packed_reference",
+      "input_layout": {
+        "q": "TqHD",
+        "k": "TkvHD",
+        "v": "TkvHD",
+        "cu_seqlens_q": "B+1",
+        "cu_seqlens_kv": "B+1",
+        "causal": "scalar bool"
+      },
+      "output_layout": {"output": "TqHD", "lse": "TqH"},
+      "semantics": {
+        "causal_alignment": "bottom_right",
+        "gqa_mapping": "query_head // (heads_q / heads_kv)",
+        "empty_segments": "legal, including a non-empty q segment paired with zero kv",
+        "packing": "each half-open cu_seqlens interval is an independent sequence",
+        "stride_contract": "logical THD; device adapters must report whether non-contiguous views are accepted"
+      },
+      "excluded": ["dropout", "bias", "local_window", "paged_cache"],
+      "tier_hypothesis": {"A": "not_suitable", "B": "promising"}
+    },
+    {
+      "candidate_id": "paged_kv_attention_decode",
+      "entrypoint": "paged_kv_decode_reference",
+      "input_layout": {
+        "q": "BSHD",
+        "key_cache": "P_page_size_HD",
+        "value_cache": "P_page_size_HD",
+        "block_table": "B_max_blocks",
+        "cache_seqlens": "B"
+      },
+      "output_layout": {"output": "BSHD", "lse": "BSH"},
+      "semantics": {
+        "causal_alignment": "bottom_right",
+        "gqa_mapping": "query_head // (heads_q / heads_kv)",
+        "page_lookup": "logical block i reads physical page block_table[b,i]",
+        "required_page_validation": "negative and out-of-range required page ids are errors",
+        "unused_table_entries": "ignored",
+        "duplicate_pages": "legal aliases that repeat the physical page in logical KV order",
+        "cache_mutation": "none"
+      },
+      "excluded": ["cache_append", "RoPE", "quantized_cache", "sparse_indexing"],
+      "tier_hypothesis": {"A": "not_suitable", "B": "promising"}
+    }
+  ]
+}

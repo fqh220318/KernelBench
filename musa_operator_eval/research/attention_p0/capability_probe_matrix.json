@@ -1,0 +1,114 @@
+{
+  "schema_version": "1.0.0",
+  "matrix_id": "attention_p0_first_three_v1",
+  "status": "not_run",
+  "hardware_validated": false,
+  "target_profiles": ["s5000_fp16", "s5000_bf16"],
+  "result_policy": {
+    "every_cell_requires": [
+      "environment_snapshot_id",
+      "backend_adapter_revision",
+      "accepted_or_rejected",
+      "correctness_against_cpu_reference",
+      "resolved_dispatch_path",
+      "exception_or_mismatch_reason",
+      "repeat_count"
+    ],
+    "gap_categories": [
+      "unsupported_shape",
+      "semantic_mismatch",
+      "layout_mismatch",
+      "multi_operator_required"
+    ],
+    "prohibition": "A planned cell is not evidence. Keep hardware_validated false until raw device records exist."
+  },
+  "candidates": [
+    {
+      "candidate_id": "attention_per_sequence_causal_dispatch",
+      "reference_entrypoint": "per_sequence_causal_reference",
+      "backend_adapters_to_resolve": [
+        "framework_scalar_sdpa",
+        "mate_scalar_causal",
+        "runtime_selected_tensor_causal_fallback"
+      ],
+      "axes": {
+        "dtype": ["float16", "bfloat16"],
+        "batch": [1, 2, 4],
+        "causal_flags": ["all_false", "all_true", "mixed"],
+        "sequence_relation": ["sq_eq_skv", "sq_lt_skv", "sq_gt_skv", "zero_kv"],
+        "head_mode": ["MHA", "GQA"],
+        "head_dim": [63, 64, 128]
+      },
+      "cells": [
+        {"cell_id": "pcs_scalar_false", "purpose": "scalar non-causal control", "status": "not_run"},
+        {"cell_id": "pcs_scalar_true", "purpose": "scalar causal control", "status": "not_run"},
+        {"cell_id": "pcs_tensor_uniform", "purpose": "tensor flag without mixed semantics", "status": "not_run"},
+        {"cell_id": "pcs_tensor_mixed", "purpose": "primary per-sequence semantic discriminator", "status": "not_run"},
+        {"cell_id": "pcs_cross_bottom_right", "purpose": "S_q differs from S_kv under mixed flags", "status": "not_run"},
+        {"cell_id": "pcs_zero_kv", "purpose": "fully masked row policy", "status": "not_run"},
+        {"cell_id": "pcs_gqa", "purpose": "query-to-kv head mapping", "status": "not_run"},
+        {"cell_id": "pcs_head_dim_63", "purpose": "non-tile shape boundary", "status": "not_run"}
+      ]
+    },
+    {
+      "candidate_id": "attention_varlen_packed_forward",
+      "reference_entrypoint": "varlen_packed_reference",
+      "backend_adapters_to_resolve": [
+        "mate_varlen_forward",
+        "tilelang_varlen_forward",
+        "paddle_musa_varlen_forward",
+        "vllm_musa_varlen_forward"
+      ],
+      "axes": {
+        "dtype": ["float16", "bfloat16"],
+        "causal": [false, true],
+        "alignment": ["bottom_right_contract", "top_left_negative_control"],
+        "segment_pattern": ["uniform", "ragged", "empty_middle", "zero_tail", "extreme_skew"],
+        "head_mode": ["MHA", "GQA"],
+        "head_dim": [63, 64, 128],
+        "layout": ["contiguous", "non_contiguous_view"]
+      },
+      "cells": [
+        {"cell_id": "varlen_uniform_mha", "purpose": "equal-length control", "status": "not_run"},
+        {"cell_id": "varlen_ragged_gqa", "purpose": "packed ragged GQA", "status": "not_run"},
+        {"cell_id": "varlen_bottom_right_discriminator", "purpose": "distinguish causal alignment conventions", "status": "not_run"},
+        {"cell_id": "varlen_empty_middle", "purpose": "empty interior segment", "status": "not_run"},
+        {"cell_id": "varlen_zero_tail", "purpose": "zero-length trailing segment", "status": "not_run"},
+        {"cell_id": "varlen_zero_kv", "purpose": "non-empty q with empty kv", "status": "not_run"},
+        {"cell_id": "varlen_head_dim_63", "purpose": "non-tile head dimension", "status": "not_run"},
+        {"cell_id": "varlen_non_contiguous", "purpose": "packed stride acceptance", "status": "not_run"}
+      ]
+    },
+    {
+      "candidate_id": "paged_kv_attention_decode",
+      "reference_entrypoint": "paged_kv_decode_reference",
+      "backend_adapters_to_resolve": [
+        "mate_paged_decode",
+        "mutlass_paged_fmha",
+        "tilelang_paged_decode",
+        "vllm_musa_paged_decode",
+        "paddle_musa_kvcache"
+      ],
+      "axes": {
+        "dtype": ["float16", "bfloat16"],
+        "page_size": [16, 32, 64],
+        "cache_length_relation": ["page_minus_1", "page_exact", "page_plus_1", "zero"],
+        "block_table": ["contiguous", "permuted", "duplicate", "invalid_required_page"],
+        "query_tokens": [1, 2],
+        "head_mode": ["MHA", "MQA", "GQA"],
+        "head_dim": [64, 128]
+      },
+      "cells": [
+        {"cell_id": "paged_single_page", "purpose": "one-page decode control", "status": "not_run"},
+        {"cell_id": "paged_boundary_minus_1", "purpose": "page boundary below", "status": "not_run"},
+        {"cell_id": "paged_boundary_exact", "purpose": "page boundary exact", "status": "not_run"},
+        {"cell_id": "paged_boundary_plus_1", "purpose": "page boundary above", "status": "not_run"},
+        {"cell_id": "paged_permuted_pages", "purpose": "logical-to-physical remapping", "status": "not_run"},
+        {"cell_id": "paged_duplicate_page", "purpose": "documented page alias semantics", "status": "not_run"},
+        {"cell_id": "paged_invalid_page", "purpose": "required page validation", "status": "not_run"},
+        {"cell_id": "paged_gqa_two_queries", "purpose": "GQA and bottom-right multi-query decode", "status": "not_run"},
+        {"cell_id": "paged_zero_cache", "purpose": "fully masked row policy", "status": "not_run"}
+      ]
+    }
+  ]
+}
