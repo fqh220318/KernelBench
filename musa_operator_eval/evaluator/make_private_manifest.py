@@ -154,11 +154,14 @@ def build_manifest(plan: list, task: dict, generalization_probe: dict | None = N
     for case in plan:
         stamped = dict(case)
         stamped.pop("role", None)
+        stamped.setdefault("attributes", {})
+        stamped.setdefault("distribution", "uniform")
+        stamped.setdefault("tolerance_profile", "default")
         stamped["golden"] = GOLDEN_MANIFEST_RELPATH.format(case_id=case["case_id"])
         cases.append(stamped)
 
     return {
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "task_id": task["id"],
         "tier": task["tier"],
         "visibility": "private",

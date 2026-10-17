@@ -66,10 +66,13 @@ def audit(
 
     readiness = assess(baseline, expected_case_ids)
     readiness_errors = declared_readiness_errors(baseline, expected_case_ids)
-    if readiness["status"] != "complete" or readiness_errors:
+    if not readiness["evidence_complete"] or not readiness["scoreable"] or readiness_errors:
         problems.append(
             "the mandatory §4.4 baseline roster is incomplete: "
-            + "; ".join(readiness_errors or readiness["problems"])
+            + "; ".join(
+                readiness_errors
+                or (readiness["evidence_problems"] + readiness["scoreability_problems"])
+            )
         )
 
     required_gap_reasons = set((task.get("library_policy") or {}).get("required_gap_reasons") or [])

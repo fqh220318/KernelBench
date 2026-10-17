@@ -159,7 +159,9 @@ def materialize_probes(
             "dtype": rng.choice(policy["dtype_choices"]),
             "shape": shape,
         })
+        case.setdefault("attributes", {})
         case.setdefault("distribution", "normal")
+        case.setdefault("tolerance_profile", "default")
         case["golden"] = f"{case['case_id']}/golden/tensors.json"
         if task.get("tier") == "B_library":
             selected = expected_path(shape, policy["expected_path_rules"])

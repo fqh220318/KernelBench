@@ -1,10 +1,9 @@
-"""Run a task's compiled path: build it, check what it linked, run it, grade it.
+"""Run the legacy compiled path as a research-only diagnostic.
 
-Guide §4.6 asks for a frozen tensor ABI that does not go through libtorch, and
-§4.7 asks for one pipeline that produces a verdict. `run_task.py` drives the
-Python-module path; this drives the compiled one, over the same stages and the
-same report shape, so a task can be graded through either without a second set of
-goldens or a second notion of what passing means.
+The normative scored path is the Python `ModelNew` pipeline in `run_task.py`.
+This tool preserves the old frozen tensor ABI and compiled checks for controlled
+comparison, using the same goldens and report vocabulary, but its output cannot be
+used for formal scoring, admission, ranking or release readiness.
 
 Three things differ from the Python path, and each is why this tool exists:
 
@@ -88,24 +87,30 @@ FRAMEWORK_TOLERANCES = {"fp32": 1e-4, "fp16": 1e-2, "bf16": 1e-2}
 DEFAULT_FRAMEWORK_TOLERANCE = 1e-2
 
 
-def resolve_case_tolerance(task: dict, precision: str) -> dict:
-    """The bar a case is graded at, resolved the way the Python path resolves it.
-
-    §4.1 puts the tolerance in the task contract and `resolve_tolerance` makes it a
-    loosen-only override of the framework's per-dtype floor, applied to `atol` and
-    `rtol` alike. This driver asks the same question of the same declaration rather
-    than inventing a second bar: two graders holding one submission to two different
-    numbers is how a case passes on one path and fails on the other.
-    """
-    declared = (task.get("tolerances") or {}).get("max_abs_error")
+def resolve_case_tolerance(task: dict, case: dict, precision: str) -> dict:
+    """Resolve a case's selected profile without collapsing its three limits."""
+    profile_name = case.get("tolerance_profile")
+    profiles = task.get("tolerance_profiles") or {}
+    profile = profiles.get(profile_name)
+    dtype_name = {"fp32": "float32", "fp16": "float16", "bf16": "bfloat16"}.get(
+        precision, precision
+    )
+    if not isinstance(profile, dict) or not isinstance(profile.get(dtype_name), dict):
+        raise ValueError(
+            f"case {case.get('case_id')}: tolerance profile {profile_name!r} "
+            f"does not define {dtype_name}"
+        )
+    declared = dict(profile[dtype_name])
+    declared.update(case.get("tolerance_override") or {})
     framework = FRAMEWORK_TOLERANCES.get(precision, DEFAULT_FRAMEWORK_TOLERANCE)
-    if declared is None:
-        threshold = framework
-        source = "kernelbench.eval.get_tolerance_for_precision"
-    else:
-        threshold = max(framework, float(declared))
-        source = "task_contract.tolerances.max_abs_error"
-    return {"atol": threshold, "rtol": threshold, "source": source, "declared_max_abs_error": declared}
+    return {
+        "profile": profile_name,
+        "atol": max(framework, float(declared["atol"])),
+        "rtol": max(framework, float(declared["rtol"])),
+        "max_abs_error": float(declared["max_abs_error"]),
+        "framework_floor": framework,
+        "source": f"task_contract.tolerance_profiles.{profile_name}.{dtype_name}",
+    }
 
 
 def fail(report: dict, code: int, errors: Sequence[str]) -> Tuple[int, dict]:
@@ -166,6 +171,7 @@ def compare_tensors(expected: Dict[str, dict], produced: Dict[str, dict], tolera
     errors: List[str] = []
     atol = float(tolerance.get("atol", 0.0))
     rtol = float(tolerance.get("rtol", 0.0))
+    absolute_ceiling = float(tolerance.get("max_abs_error", float("inf")))
     max_error: Optional[float] = None
 
     for name, golden in expected.items():
@@ -184,6 +190,10 @@ def compare_tensors(expected: Dict[str, dict], produced: Dict[str, dict], tolera
         if violating:
             errors.append(
                 f"{name}: {violating} of {difference.size} values outside atol {atol} + rtol {rtol}, worst {worst:.6g}"
+            )
+        if worst > absolute_ceiling:
+            errors.append(
+                f"{name}: max_abs_error {worst:.6g} exceeds the independent ceiling {absolute_ceiling:.6g}"
             )
     for name in produced:
         if name not in expected:
@@ -713,6 +723,11 @@ def run_binary_case(
                     "l2_thrash_bytes": timing["l2_thrash_bytes"],
                     "mean_ms": framework_mean(calls),
                     "min_ms": round(min(calls), 3),
+                    "max_ms": round(max(calls), 3),
+                    "std_ms": round(float(np.std(calls)), 6),
+                    "p10_ms": round(float(np.percentile(calls, 10)), 6),
+                    "p50_ms": round(float(np.percentile(calls, 50)), 6),
+                    "p90_ms": round(float(np.percentile(calls, 90)), 6),
                     "samples": [round(value, 6) for value in calls],
                 }
             else:
@@ -919,6 +934,7 @@ def evaluate_binary_task(
     report["task_id"] = task.get("id")
     report["tier"] = task.get("tier")
     report["task_admission"] = task.get("admission")
+    report["performance_protocol"] = task.get("performance_protocol")
     report["submission"] = str(submission)
     report["build"] = {"build_dir": str(build_dir)}
 
@@ -939,6 +955,18 @@ def evaluate_binary_task(
     if admission_errors:
         report["admission"] = {"passed": False, "errors": admission_errors}
         return fail(report, exit_codes.EXIT_TASK_NOT_ADMITTED, admission_errors)
+    protocol_errors = run_task.performance_protocol_errors(task, repeat)
+    protocol = task.get("performance_protocol") or {}
+    if warmup != protocol.get("warmup"):
+        protocol_errors.append(
+            f"requested warmup {warmup}, but the contract freezes {protocol.get('warmup')!r}"
+        )
+    if protocol_errors:
+        report["contract"] = {
+            "performance_protocol": task.get("performance_protocol"),
+            "errors": protocol_errors,
+        }
+        return fail(report, exit_codes.EXIT_PERFORMANCE_PROTOCOL_MISMATCH, protocol_errors)
     report["stages"].append("environment")
     environment = run_task.environment_stage(task)
     report["environment"] = environment
@@ -1041,8 +1069,6 @@ def _build_check_and_evaluate(
             return fail(report, exit_codes.EXIT_LINK_WHITELIST_VIOLATION, link.get("errors", []))
 
     report["stages"].append("evaluation")
-    tolerance = resolve_case_tolerance(task, report.get("precision") or DEFAULT_PRECISION)
-    report["tolerance_used"] = tolerance
     stage_root = build_dir / "cases"
 
     def run_one(case: dict) -> dict:
@@ -1055,6 +1081,9 @@ def _build_check_and_evaluate(
             )
         except StagingError as error:
             raise StagingError(f"{case['case_id']}: {error}") from error
+        tolerance = resolve_case_tolerance(
+            task, case, report.get("precision") or DEFAULT_PRECISION
+        )
         return run_binary_case(
             task,
             binary,

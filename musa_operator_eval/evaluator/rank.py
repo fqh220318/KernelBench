@@ -112,20 +112,32 @@ def rank_report(report: dict, baselines: Dict[str, dict]) -> dict:
         return row
     readiness = assess(baseline)
     readiness_errors = declared_readiness_errors(baseline)
-    row["baseline_readiness"] = readiness["status"]
-    if readiness["status"] != "complete" or readiness_errors:
+    row["baseline_readiness"] = {
+        "evidence_complete": readiness["evidence_complete"],
+        "scoreable": readiness["scoreable"],
+        "release_ready": readiness["release_ready"],
+    }
+    if not readiness["evidence_complete"] or readiness_errors:
         row["unranked"] = (
             "the mandatory §4.4 baseline roster is incomplete or its readiness record has drifted"
         )
-        row["baseline_problems"] = readiness_errors or readiness["problems"]
+        row["baseline_problems"] = readiness_errors or readiness["evidence_problems"]
         return row
-    denominator = (baseline.get("scoring") or {}).get("speedup_denominator")
-    row["denominator"] = denominator
-    if not denominator:
-        row["unranked"] = "the baseline names no speedup denominator"
+    if not readiness["scoreable"]:
+        row["unranked"] = "the baseline evidence is complete but not scoreable"
+        row["baseline_problems"] = readiness["scoreability_problems"]
         return row
-
-    reference = reference_rows(baseline, denominator)
+    if not readiness["release_ready"]:
+        row["unranked"] = "the task and its scoreable baseline are not release-ready"
+        row["baseline_problems"] = readiness["release_blockers"]
+        return row
+    denominator_by_case = (baseline.get("scoring") or {}).get("denominator_by_case") or {}
+    row["denominator_by_case"] = {
+        case_id: selection.get("implementation")
+        for case_id, selection in sorted(denominator_by_case.items())
+    }
+    unique_denominators = sorted(set(row["denominator_by_case"].values()))
+    row["denominator"] = unique_denominators[0] if len(unique_denominators) == 1 else "per_case"
     ratios: Dict[str, float] = {}
     excluded: Dict[str, str] = {}
     for case_row in report.get("cases", []):
@@ -134,15 +146,27 @@ def rank_report(report: dict, baselines: Dict[str, dict]) -> dict:
         if not isinstance(runtime_ms, (int, float)) or runtime_ms <= 0:
             excluded[case_id] = "the report has no usable runtime for this case"
             continue
+        selection = denominator_by_case.get(case_id) or {}
+        denominator = selection.get("implementation")
+        reference = reference_rows(baseline, denominator) if denominator else {}
         if case_id not in reference:
-            excluded[case_id] = f"the baseline has no passing {denominator} measurement for this case"
+            excluded[case_id] = "the baseline has no passing frozen denominator for this case"
             continue
         ratios[case_id] = reference[case_id] / float(runtime_ms)
 
     row["cases_compared"] = len(ratios)
     row["ratios"] = {case_id: round(value, 6) for case_id, value in sorted(ratios.items())}
     row["excluded"] = excluded
-    if ratios:
+    if not report.get("cases"):
+        row["unranked"] = "the report contains no scoring cases"
+        return row
+    if excluded:
+        row["unranked"] = (
+            "formal ranking requires a usable submission runtime and a passing frozen "
+            "denominator for every scoring case"
+        )
+        return row
+    if ratios and len(ratios) == len(report.get("cases", [])):
         row["geometric_mean_ratio"] = round(
             math.exp(sum(math.log(value) for value in ratios.values()) / len(ratios)), 6
         )

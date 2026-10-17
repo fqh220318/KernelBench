@@ -16,11 +16,12 @@ reason:
     the harness, and a baseline that passed one would be measuring a model the
     harness never builds.
   * input and parameter casting, via `_process_input_tensor`.
-  * the correctness tolerance, resolved by `kernelbench.eval.resolve_tolerance`.
-    The framework's per-dtype value is the floor and the task's `tolerances` block
-    can only loosen it, so a task cannot grade itself leniently without bound; what
-    matters more is that this resolves to the same number the grader will use, so
-    the gate is not measured at a bar nobody is scored against.
+  * the correctness limits, resolved by
+    `kernelbench.eval.resolve_tolerance_profile`. The selected named profile keeps
+    `atol`, `rtol` and `max_abs_error` independent: the framework's per-dtype floor
+    raises only `atol` and `rtol`, while the declared maximum-error ceiling remains
+    exact. What matters most is that this is the same three-part decision the grader
+    uses, so the gate is not measured at a bar nobody is scored against.
 
 Every implementation is supplied as a module path. The pilot's tooling named three
 implementations in its own source, which meant it could only ever drive a problem
@@ -32,7 +33,9 @@ here, and reaching the attention core is the model's business.
 
 Implementations that cannot be honestly built on this checkout are recorded as
 `unavailable` with a reason rather than being approximated by something else. An
-approximation under a real implementation's name is worse than a gap.
+approximation under a real implementation's name is worse than a gap. Such a row
+completes the mandatory observation roster but is never treated as a latency; the
+gate and ranker separately require passing rows for the roles they use.
 
     python musa_operator_eval/evaluator/measure_baseline.py \
         --task-dir musa_operator_eval/tasks/kb_l3_43_b \
@@ -56,7 +59,12 @@ from pathlib import Path
 import torch
 import torch_musa  # noqa: F401
 
-from run_task import case_source, load_task
+from run_task import (
+    case_source,
+    case_tolerance_declaration,
+    load_task,
+    performance_protocol_errors,
+)
 from baseline_readiness import assess as assess_baseline_readiness
 from baseline_readiness import required_roles
 
@@ -71,7 +79,7 @@ from kernelbench.dispatch_trace import (  # noqa: E402
 )
 from kernelbench.eval import (  # noqa: E402
     _process_input_tensor,
-    resolve_tolerance,
+    resolve_tolerance_profile,
     set_seed,
 )
 
@@ -85,12 +93,12 @@ from kernelbench.eval import (  # noqa: E402
 # one pass of `measurements` trials, each preceded by an L2 thrash so the number is a
 # cold-cache number, with the first trial discarded and the mean taken.
 PROTOCOL = {
-    "timer": "cuda_event",
+    "timer": "kernelbench_device_event",
     "warmup": 3,
     "measurements": 100,
     "discard_first": 1,
     "statistic": "mean",
-    "cache": "cold",
+    "cache": "l2_flush_each_trial",
     "rounds": 1,
     "source": "kernelbench.timing.time_execution_with_cuda_event",
     "note": (
@@ -288,9 +296,19 @@ def _measure(name, call, expected, tolerance, trace=None, must_trace=False, requ
         if tuple(actual.shape) != tuple(expected.shape):
             row.update(status="fail", reason=f"shape {tuple(actual.shape)} != {tuple(expected.shape)}")
             return row
-        if not torch.allclose(actual.float(), expected.float(), atol=tolerance, rtol=tolerance):
-            difference = torch.max(torch.abs(actual.float() - expected.float())).item()
-            row.update(status="fail", reason=f"max_abs_diff {difference:.6f} exceeds {tolerance}")
+        difference = torch.max(torch.abs(actual.float() - expected.float())).item()
+        allclose = torch.allclose(
+            actual.float(), expected.float(),
+            atol=tolerance["atol"], rtol=tolerance["rtol"],
+        )
+        if not allclose or difference > tolerance["max_abs_error"]:
+            row.update(
+                status="fail",
+                reason=(
+                    f"correctness failed: allclose={allclose}, max_abs_diff={difference:.6f}, "
+                    f"limits={tolerance}"
+                ),
+            )
             return row
         with torch.no_grad():
             samples, peak_before, peak_after = time_samples(call)
@@ -303,6 +321,7 @@ def _measure(name, call, expected, tolerance, trace=None, must_trace=False, requ
         row["latency_ms"] = float(stats["mean"])
         row["latency_ms_stats"] = {key: stats[key] for key in ("mean", "std", "min", "max", "num_trials")}
         row["latency_ms_p90"] = percentile(samples, 0.90)
+        row["latency_ms_p50"] = percentile(samples, 0.50)
         row["latency_ms_p10"] = percentile(samples, 0.10)
         row["latency_ms_samples"] = [round(value, 6) for value in samples]
         row["throughput_per_second"] = (
@@ -365,7 +384,10 @@ def measure_case(case, task, problem_source, implementations: dict, unavailable:
     reference, init_inputs, inputs, dtype = load_case(task, case, problem_source)
     # Resolved through the same helper the grader uses, so the admission gate is
     # measured at the tolerance submissions are actually scored against.
-    tolerance = resolve_tolerance(dtype, (task.get("tolerances") or {}).get("max_abs_error"))
+    precision = {"float32": "fp32", "float16": "fp16", "bfloat16": "bf16"}[case["dtype"]]
+    tolerance = resolve_tolerance_profile(
+        dtype, case_tolerance_declaration(task, case, precision)
+    )
 
     # Each implementation gets its own trace file, created and truncating inside
     # `_measure`. A single file per case would mix the naive's records with the
@@ -455,6 +477,17 @@ def main() -> int:
 
     task, cases_manifest, problem_source = load_task(args.task_dir, args.cases)
 
+    protocol_errors = performance_protocol_errors(
+        task, int((task.get("performance_protocol") or {}).get("measurements", -1))
+    )
+    if protocol_errors:
+        print(
+            "[baseline] task performance protocol does not match the formal KernelBench loop: "
+            + "; ".join(protocol_errors),
+            file=sys.stderr,
+        )
+        return 2
+
     if task.get("tier") != args.tier:
         print(
             f"[baseline] --tier {args.tier} does not match task tier {task.get('tier')}",
@@ -531,25 +564,24 @@ def main() -> int:
             print(f"    {row['implementation']:<28}{row['status']:<12}{latency}", flush=True)
 
     payload = {
-        "schema_version": "1.0.0",
+        "schema_version": "1.1.0",
         "task_id": task.get("id"),
         "tier": task.get("tier"),
         "environment_snapshot": snapshot_id,
+        "task_release_status": (task.get("publication") or {}).get("release_status", "migration_required"),
         "measurement_protocol": PROTOCOL,
         "weight_alignment": "re-seed and rebuild, as kernelbench.eval does; no state dict is copied",
-        "tolerance_source": "kernelbench.eval.resolve_tolerance",
-        # The block above names the resolver; these two record what it resolved to
-        # for this run, which is the part a reader needs in order to judge a
-        # `max_abs_diff ... exceeds ...` row. The declared value is the task's own
-        # `tolerances.max_abs_error`, and the resolver takes the larger of it and
-        # the framework's per-dtype value, so a task can loosen grading and not
-        # tighten it.
-        "declared_tolerance": (task.get("tolerances") or {}).get("max_abs_error"),
-        # Keyed by the manifest's dtype name, resolved from the torch dtype: the
-        # framework's string vocabulary is the driver's (`fp16`, `bf16`, `fp32`),
-        # which is not the manifest's (`float16`, `bfloat16`, `float32`).
+        "tolerance_source": "case.tolerance_profile -> task.tolerance_profiles -> kernelbench.eval.resolve_tolerance_profile",
+        "declared_tolerance_profiles": task.get("tolerance_profiles"),
         "resolved_tolerances": {
-            name: resolve_tolerance(DTYPES[name], (task.get("tolerances") or {}).get("max_abs_error"))
+            name: resolve_tolerance_profile(
+                DTYPES[name],
+                case_tolerance_declaration(
+                    task,
+                    next(case for case in cases_manifest["cases"] if case["dtype"] == name),
+                    {"float32": "fp32", "float16": "fp16", "bfloat16": "bf16"}[name],
+                ),
+            )
             for name in sorted({case["dtype"] for case in cases_manifest["cases"]})
         },
         "implementations": sorted({row["implementation"] for row in results}),
@@ -557,6 +589,13 @@ def main() -> int:
         "scoring": (
             {
                 "speedup_denominator": UPSTREAM_ROLE,
+                "denominator_by_case": {
+                    case["case_id"]: {
+                        "implementation": UPSTREAM_ROLE,
+                        "reason": "primary A-tier denominator frozen before scoring",
+                    }
+                    for case in cases_manifest["cases"]
+                },
                 "reference_implementation": EAGER_ROLE,
                 "correctness_gate": "all_hidden_cases",
                 # §4.4 lists torch_musa eager as its own entry and asks it only to
@@ -568,6 +607,13 @@ def main() -> int:
             if args.tier == "A_kernel"
             else {
                 "speedup_denominator": EXPERT_ROLE,
+                "denominator_by_case": {
+                    case["case_id"]: {
+                        "implementation": EXPERT_ROLE,
+                        "reason": "B-tier scoring denominator is the verified expert dispatch",
+                    }
+                    for case in cases_manifest["cases"]
+                },
                 "reference_implementation": NAIVE_ROLE,
                 "correctness_gate": "all_hidden_cases",
                 "minimum_naive_to_expert_ratio": 1.3,
@@ -578,8 +624,8 @@ def main() -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(args.output)
-    if payload["readiness"]["status"] != "complete":
-        print("[baseline] record written but mandatory roster is incomplete; it cannot be gated or ranked", file=sys.stderr)
+    if not payload["readiness"]["evidence_complete"]:
+        print("[baseline] record written but mandatory evidence is incomplete", file=sys.stderr)
         return 3
     return 0
 

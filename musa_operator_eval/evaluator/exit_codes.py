@@ -46,6 +46,11 @@ EXIT_PRECISION_CONTRACT_MISMATCH = 2
 # categories). It may be worked on, but it must not enter scoring or release.
 EXIT_TASK_NOT_ADMITTED = 3
 
+# A formal run requested a timing shape different from the task's frozen
+# performance protocol. Mixing it with the matching baseline would turn the
+# resulting ratio into a comparison of protocols rather than implementations.
+EXIT_PERFORMANCE_PROTOCOL_MISMATCH = 4
+
 # ---------------------------------------------------------------------------
 # Environment and data readiness (§4.7 "环境采集", "Case 生成")
 #
@@ -171,6 +176,7 @@ EXIT_CODE_DESCRIPTIONS: Dict[int, str] = {
     EXIT_OK: "all requested stages passed",
     EXIT_PRECISION_CONTRACT_MISMATCH: "the requested --precision is not one the task's tensor contract permits",
     EXIT_TASK_NOT_ADMITTED: "the B-tier task has not satisfied its admission prerequisites",
+    EXIT_PERFORMANCE_PROTOCOL_MISMATCH: "the requested timing parameters do not match the task's frozen performance protocol",
     EXIT_ENVIRONMENT_UNAVAILABLE: "the device stack could not be imported, so no case could be evaluated",
     EXIT_INPUT_UNAVAILABLE: "the task package, case manifest or submission file could not be read",
     EXIT_CASE_GENERATION_FAILED: "case parameters do not resolve, or a case does not specialise into valid Python",

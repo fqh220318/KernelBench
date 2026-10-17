@@ -3,7 +3,7 @@
 A task's `problem.py` describes a single configuration through its module-level
 defaults; `public_cases.json` lists several configurations. This driver bridges
 the two: for each case it appends the overrides that turn those defaults into
-that case, evaluates the submission against the reference, and checks the
+that case, evaluates the submission against its generated golden, and checks the
 dispatch trace against the expected path.
 
 The case-to-variable mapping is read from `task.json` under `case_parameters`, so
@@ -71,6 +71,7 @@ from exit_codes import (  # noqa: E402  (import follows the sys.path fix-up abov
     EXIT_LINK_WHITELIST_VIOLATION,
     EXIT_OK,
     EXIT_PERFORMANCE_FAILED,
+    EXIT_PERFORMANCE_PROTOCOL_MISMATCH,
     EXIT_PRECISION_CONTRACT_MISMATCH,
     EXIT_STABILITY_FAILED,
     EXIT_STATIC_AUDIT_DEVICE_SOURCE,
@@ -93,6 +94,34 @@ from case_specialization import (  # noqa: E402,F401
     load_task,
     resolve_case_field,
 )
+
+
+FORMAL_PERFORMANCE_PROTOCOL = {
+    "timer": "device_event",
+    "warmup": 3,
+    "measurements": 100,
+    "discard_first": 1,
+    "cache": "l2_flush_each_trial",
+    "statistic": "mean",
+}
+
+
+def performance_protocol_errors(task: dict, requested_measurements: int) -> List[str]:
+    """Reject timing requests that differ from the frozen task protocol."""
+    protocol = task.get("performance_protocol")
+    if not isinstance(protocol, dict):
+        return ["task.performance_protocol is missing"]
+    errors = [
+        f"performance_protocol.{name} is {protocol.get(name)!r}, expected {expected!r}"
+        for name, expected in FORMAL_PERFORMANCE_PROTOCOL.items()
+        if protocol.get(name) != expected
+    ]
+    if requested_measurements > 0 and requested_measurements != protocol.get("measurements"):
+        errors.append(
+            f"requested {requested_measurements} performance trials, but the contract freezes "
+            f"{protocol.get('measurements')!r}"
+        )
+    return errors
 import generalization_probe  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -328,6 +357,31 @@ def allowed_precisions(task: dict) -> List[str]:
     """
     dtypes = (task.get("tensor_contract") or {}).get("input_dtypes") or []
     return [name for name, dtype in PRECISION_DTYPE_NAMES.items() if dtype in dtypes]
+
+
+def case_tolerance_declaration(task: dict, case: dict, precision: str) -> dict:
+    """Return the declared three-part tolerance for this case and precision."""
+    profile_name = case.get("tolerance_profile")
+    if not profile_name:
+        raise ValueError(f"case {case.get('case_id')}: no tolerance_profile")
+    profiles = task.get("tolerance_profiles") or {}
+    profile = profiles.get(profile_name)
+    if not isinstance(profile, dict):
+        raise ValueError(
+            f"case {case.get('case_id')}: unknown tolerance_profile {profile_name!r}"
+        )
+    dtype = PRECISION_DTYPE_NAMES.get(precision, precision)
+    declared = profile.get(dtype)
+    if not isinstance(declared, dict):
+        raise ValueError(
+            f"case {case.get('case_id')}: tolerance profile {profile_name!r} "
+            f"does not define {dtype}"
+        )
+    result = dict(declared)
+    override = case.get("tolerance_override")
+    if override:
+        result.update(override)
+    return result
 
 
 def verify_case_parameters(
@@ -915,6 +969,7 @@ def run_case(
     num_correct_trials: int,
     num_perf_trials: int,
     verbose: bool,
+    generated_dir: Optional[Path] = None,
 ) -> dict:
     """Evaluate one case and return its row of the report.
 
@@ -943,15 +998,16 @@ def run_case(
         # on the same random inputs and the seed a case declared described a
         # tensor nobody ever saw.
         seed_num=int(case.get("seed", 42)),
-        # The contract's tolerance block is the task's one lever on grading, and it
-        # only loosens. Without this the field was declared by every package and
-        # read by nothing, so a task could state a bar its own cases were graded
-        # below without anything noticing.
-        tolerance=(task.get("tolerances") or {}).get("max_abs_error"),
+        # A case selects a named profile.  All three limits travel together, but
+        # remain independent in the correctness check.
+        tolerance=case_tolerance_declaration(task, case, precision),
         backend=backend,
         precision=get_torch_dtype_from_string(precision),
         num_correct_trials=num_correct_trials,
         num_perf_trials=num_perf_trials,
+        timing_method="cuda_event",
+        num_perf_warmup=int(task["performance_protocol"]["warmup"]),
+        num_perf_discard_first=int(task["performance_protocol"]["discard_first"]),
         # `measure_performance` defaults to False upstream, and without it the
         # evaluator returns runtime -1.0 no matter what num_perf_trials says.
         # That silently produced reports where every case passed and no number
@@ -959,6 +1015,21 @@ def run_case(
         measure_performance=num_perf_trials > 0,
         verbose=verbose,
     )
+
+    # The generated tensors are the concrete case. More importantly, the golden
+    # is the output of the independent CPU oracle when the task declares one.
+    # Passing both into the framework makes that golden the correctness authority;
+    # merely verifying its digest above would still leave problem.py as the thing
+    # that decides whether a submission is right.
+    if generated_dir is not None:
+        inputs, expected, expected_names = case_correctness_payload(
+            task, case, Path(generated_dir)
+        )
+        shared.update(
+            golden_inputs=inputs,
+            golden_outputs=expected,
+            golden_output_names=expected_names,
+        )
 
     if tier == "B_library":
         result = eval_library_dispatch_against_ref(
@@ -1005,11 +1076,53 @@ def run_case(
         "ref_runtime": result.ref_runtime,
         "tier": metadata.get("tier"),
         "dispatch_trace_summary": metadata.get("dispatch_trace_summary"),
+        "correctness_reference": metadata.get("correctness_reference"),
+        "golden_output_names": metadata.get("golden_output_names"),
+        "tolerance_used": metadata.get("tolerance_used"),
+        "runtime_stats": getattr(result, "runtime_stats", None) or None,
+        "ref_runtime_stats": getattr(result, "ref_runtime_stats", None) or None,
         "static_audit_errors": static_audit_errors,
         "dispatch_trace_errors": dispatch_trace_errors,
         "passed": passed,
         "errors": errors,
     }
+
+
+def case_correctness_payload(
+    task: dict, case: dict, generated_root: Path
+) -> Tuple[List[object], List[object], List[str]]:
+    """Load one case's ordered inputs and graded golden tensors.
+
+    A golden may carry diagnostic companions that the submission does not return
+    (the SDPA oracle's log-sum-exp is one). ``outputs.required`` is the public
+    submission ABI, so only required names that are actual golden tensors are
+    graded. Out-of-band requirements such as ``dispatch_trace`` remain enforced
+    by their own stage.
+    """
+    from run_binary import read_manifest
+
+    case_id = str(case["case_id"])
+    input_dir = Path(generated_root) / case_id / "input"
+    golden_path = golden_manifest_path(case, Path(generated_root))
+    if golden_path is None:
+        raise ValueError(f"case {case_id}: no golden path is declared")
+
+    inputs = read_manifest(input_dir)
+    expected = read_manifest(golden_path.parent)
+    required = list((task.get("outputs") or {}).get("required") or [])
+    graded_names = [name for name in required if name in expected]
+    if not graded_names:
+        # Legacy contracts did not always name tensor outputs. Preserve their
+        # manifest order while normative contracts are required to be explicit.
+        graded_names = list(expected)
+    if not graded_names:
+        raise ValueError(f"case {case_id}: the golden declares no graded tensor")
+
+    return (
+        [record["values"] for record in inputs.values()],
+        [expected[name]["values"] for name in graded_names],
+        graded_names,
+    )
 
 
 def stage_for_case(case: dict) -> str:
@@ -1081,6 +1194,7 @@ def evaluate_cases(
     verbose: bool,
     golden_results: Optional[Dict[str, dict]] = None,
     stability_reruns: int = 1,
+    generated_dir: Optional[Path] = None,
 ) -> Tuple[List[dict], int]:
     """Run every case, short-circuiting once a stage has failed.
 
@@ -1126,6 +1240,7 @@ def evaluate_cases(
             num_correct_trials,
             num_perf_trials,
             verbose,
+            generated_dir,
         )
         row["tag"] = case.get("tag")
         row["stage"] = stage
@@ -1154,7 +1269,7 @@ def evaluate_cases(
             for attempt in range(stability_reruns):
                 rerun = run_case(
                     task, case, problem_source, submission_source, backend, precision,
-                    num_correct_trials, num_perf_trials, verbose,
+                    num_correct_trials, num_perf_trials, verbose, generated_dir,
                 )
                 stability["reruns"] = attempt + 1
                 if not rerun.get("passed"):
@@ -1214,6 +1329,7 @@ def evaluate_task(
         "task_admission": task.get("admission"),
         "backend": backend,
         "precision": precision,
+        "performance_protocol": task.get("performance_protocol"),
         "stages": [],
     }
 
@@ -1221,6 +1337,23 @@ def evaluate_task(
     if admission_errors:
         report["admission"] = {"passed": False, "errors": admission_errors}
         report["summary"] = build_summary(EXIT_TASK_NOT_ADMITTED, errors=admission_errors)
+        return report
+
+    permitted = allowed_precisions(task)
+    if precision not in permitted:
+        report["contract"] = {"permitted_precisions": permitted}
+        report["summary"] = build_summary(EXIT_PRECISION_CONTRACT_MISMATCH)
+        return report
+
+    protocol_errors = performance_protocol_errors(task, num_perf_trials)
+    if protocol_errors:
+        report["contract"] = {
+            "performance_protocol": task.get("performance_protocol"),
+            "errors": protocol_errors,
+        }
+        report["summary"] = build_summary(
+            EXIT_PERFORMANCE_PROTOCOL_MISMATCH, errors=protocol_errors
+        )
         return report
 
     try:
@@ -1235,12 +1368,6 @@ def evaluate_task(
     if runtime_probe:
         report["generalization_probe"] = runtime_probe
     cases = cases_manifest["cases"]
-
-    permitted = allowed_precisions(task)
-    if precision not in permitted:
-        report["contract"] = {"permitted_precisions": permitted}
-        report["summary"] = build_summary(EXIT_PRECISION_CONTRACT_MISMATCH)
-        return report
 
     parameter_errors = verify_case_parameters(cases, case_parameters)
     source_errors = verify_case_sources(cases, problem_source, case_parameters)
@@ -1324,6 +1451,7 @@ def evaluate_task(
             verbose,
             golden_by_case,
             stability_reruns,
+            generated_dir,
         )
     except ImportError as error:
         report["environment"] = {

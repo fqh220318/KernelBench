@@ -35,6 +35,25 @@ generator = _load("musa_generate_public_cases", ROOT / "tools" / "generate_cases
 audit = _load("musa_audit_agent_package", ROOT / "evaluator" / "audit_agent_package.py")
 
 
+def deployment_boundary(package_root: Path) -> dict:
+    """Prove that the hand-off contains no production-control-plane files."""
+    package_root = Path(package_root)
+    forbidden = []
+    for path in package_root.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(package_root)
+        if any(part in {"evaluator", "private"} for part in relative.parts):
+            forbidden.append(relative.as_posix())
+    return {
+        "passed": not forbidden,
+        "package_scope": "single_public_task",
+        "production_evaluator": "private_mount_required",
+        "public_harness_role": "development_mirror_only",
+        "forbidden_files": sorted(forbidden),
+    }
+
+
 def package_task(task_dir: Path, output_dir: Path) -> dict:
     task_dir = Path(task_dir).resolve()
     output_dir = Path(output_dir).resolve()
@@ -42,6 +61,13 @@ def package_task(task_dir: Path, output_dir: Path) -> dict:
     if not (task_dir / "task.json").is_file() or not public_path.is_file():
         raise ValueError(f"{task_dir} is not a task package")
     task = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
+    if output_dir.exists():
+        raise FileExistsError(f"refusing to overwrite existing release directory: {output_dir}")
+    lifecycle = task.get("lifecycle") or {}
+    if lifecycle.get("decision") not in (None, "keep"):
+        raise ValueError(
+            f"the task lifecycle is {lifecycle['decision']}; only keep tasks can be packaged"
+        )
     if task.get("tier") == "B_library":
         admission = task.get("admission") or {}
         reasons = (task.get("library_policy") or {}).get("required_gap_reasons") or []
@@ -50,12 +76,15 @@ def package_task(task_dir: Path, output_dir: Path) -> dict:
                 "the B-tier task is not scoreable: release requires measured/admit status "
                 "and at least two required gap-reason categories"
             )
+    publication = task.get("publication") or {}
+    if task.get("normative_spec") != "1.0.0" or publication.get("release_status") != "release_ready":
+        raise ValueError(
+            "the task is not release-ready under normative spec 1.0.0; "
+            "complete the Phase 22-24 migration before packaging"
+        )
     public = json.loads(public_path.read_text(encoding="utf-8"))
     if public.get("visibility") != "public":
         raise ValueError("the release packager accepts only a public case manifest")
-    if output_dir.exists():
-        raise FileExistsError(f"refusing to overwrite existing release directory: {output_dir}")
-
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=f".{output_dir.name}-", dir=output_dir.parent) as temporary:
         staging = Path(temporary) / output_dir.name
@@ -67,9 +96,15 @@ def package_task(task_dir: Path, output_dir: Path) -> dict:
         generated = staging / "generated"
         generator.generate_manifest(public, generated, task_dir)
 
-        report = audit.audit_package(staging, require_public_data=True)
+        report = audit.audit_package(staging, require_public_data=True, normative=True)
         if not report["passed"]:
             raise ValueError("release disclosure audit failed:\n  " + "\n  ".join(report["findings"]))
+        boundary = deployment_boundary(staging)
+        if not boundary["passed"]:
+            raise ValueError(
+                "release deployment boundary failed:\n  "
+                + "\n  ".join(boundary["forbidden_files"])
+            )
 
         shutil.move(str(staging), str(output_dir))
 
@@ -78,6 +113,7 @@ def package_task(task_dir: Path, output_dir: Path) -> dict:
         "output": str(output_dir),
         "public_cases": len(public["cases"]),
         "audit_passed": True,
+        "deployment_boundary": boundary,
     }
 
 

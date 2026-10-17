@@ -19,18 +19,51 @@ def evaluate(baseline: dict) -> dict:
     threshold = baseline.get("scoring", {}).get("minimum_naive_to_expert_ratio", 1.3)
     readiness = assess(baseline)
     readiness_errors = declared_readiness_errors(baseline)
-    if readiness["status"] != "complete" or readiness_errors:
+    if not readiness["evidence_complete"] or not readiness["scoreable"] or readiness_errors:
         return {
             "decision": "insufficient_data",
             "threshold": threshold,
             "ratios": {},
             "readiness": readiness,
             "reason": "the mandatory §4.4 baseline roster is incomplete or its readiness record has drifted",
-            "problems": readiness_errors or readiness["problems"],
+            "problems": readiness_errors or (
+                readiness["evidence_problems"] + readiness["scoreability_problems"]
+            ),
         }
     by_case: dict[str, dict[str, dict]] = {}
     for result in baseline.get("results", []):
         by_case.setdefault(result["case_id"], {})[result["implementation"]] = result
+
+    # Roster readiness only proves that every mandatory observation is present.
+    # The B-tier performance gate is narrower and stricter: its numerator and
+    # denominator must both pass, with usable latencies, on every measured case.
+    # Auxiliary comparison roles may be unsupported on a library-gap case and
+    # do not participate in this ratio.
+    pair_problems = []
+    for case_id, implementations in sorted(by_case.items()):
+        for role in ("naive_library_composition", "expert_dispatch"):
+            row = implementations.get(role)
+            if row is None:
+                pair_problems.append(f"{case_id}/{role}: missing")
+                continue
+            if row.get("status") != "pass":
+                pair_problems.append(
+                    f"{case_id}/{role}: {row.get('status')} ({row.get('reason')})"
+                )
+                continue
+            latency = row.get("latency_ms")
+            if not isinstance(latency, (int, float)) or latency <= 0:
+                pair_problems.append(f"{case_id}/{role}: no positive latency")
+    if pair_problems:
+        return {
+            "decision": "insufficient_data",
+            "threshold": threshold,
+            "ratios": {},
+            "readiness": readiness,
+            "reason": "every case needs paired passing naive/expert measurements",
+            "problems": pair_problems,
+        }
+
     ratios = {}
     for case_id, implementations in by_case.items():
         naive = implementations.get("naive_library_composition")

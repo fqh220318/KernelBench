@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -26,6 +27,7 @@ from baseline_readiness import assess, declared_readiness_errors, required_roles
 
 
 DEFAULT_OUTPUT = ROOT / "collection" / "baseline_collection_plan.json"
+COMMON_SUPPLIED_ROLES = ("upstream_musa", "mudnn_fused", "torch_musa_sdpa")
 
 
 def _relative(path: Path, root: Path) -> str:
@@ -56,13 +58,24 @@ def _readiness_codes(derived: dict, drift: list[str]) -> list[str]:
         codes.append("missing_case_role_rows")
     if derived["duplicate_rows"]:
         codes.append("duplicate_case_role_rows")
-    if derived["unavailable_rows"]:
-        codes.append("unavailable_required_rows")
-    if derived["nonpassing_rows"]:
-        codes.append("nonpassing_required_rows")
+    # Non-passing rows are observations, not missing collection work.  Their
+    # aggregate roles remain in unavailable_roles/nonpassing_roles below; the
+    # gate and ranker decide whether the score-critical roles are usable.
     if drift:
         codes.append("declared_readiness_drift")
     return codes
+
+
+def _known_implementation_path(task: dict, role: str, root: Path) -> str | None:
+    """Return a public, locally verifiable implementation path when one is canonical."""
+    if role != "upstream_musa":
+        return None
+    match = re.fullmatch(r"kb_l(\d+)_(\d+)", str(task.get("set_entry") or ""))
+    if not match:
+        return None
+    level, problem = match.groups()
+    candidate = root.parent / "KernelBench" / f"level{level}_musa" / f"problem_{problem}" / "model_new.py"
+    return _relative(candidate, root) if candidate.is_file() else None
 
 
 def _command_template(task: dict, root: Path) -> list[str]:
@@ -88,19 +101,12 @@ def _command_template(task: dict, root: Path) -> list[str]:
                 f"{private_dir}/expert/model_new.py",
             ]
         )
-        implementation_roles = (
-            "upstream_musa",
-            "mudnn_fused",
-            "torch_musa_sdpa",
-        )
+        implementation_roles = COMMON_SUPPLIED_ROLES
     else:
-        implementation_roles = (
-            "upstream_musa",
-            "mudnn_fused",
-            "torch_musa_sdpa",
-        )
+        implementation_roles = COMMON_SUPPLIED_ROLES
     for role in implementation_roles:
-        command.extend(["--implementation", f"{role}=<path-to-{role}-ModelNew-module>"])
+        path = _known_implementation_path(task, role, root)
+        command.extend(["--implementation", f"{role}={path or f'<path-to-{role}-ModelNew-module>'}"])
     command.extend(["--output", f"{private_dir}/baseline.hidden.json"])
     return command
 
@@ -125,10 +131,28 @@ def inspect_task(task_path: Path, root: Path) -> dict:
     mandatory = list(required_roles(tier))
 
     admission = task.get("admission") or {}
+    lifecycle = task.get("lifecycle") or {}
+    lifecycle_decision = lifecycle.get("decision")
     admitted = tier == "A_kernel" or (
         admission.get("status") == "measured" and admission.get("decision") == "admit"
     )
-    priority = "release_blocker" if admitted else "after_admission_blocker"
+    inactive_current_contract = (
+        lifecycle_decision in {"redesign_new_id", "retire", "research_only"}
+        or (tier == "B_library" and admission.get("status") == "blocked_gap_coverage")
+    )
+    if inactive_current_contract:
+        priority = "inactive_current_contract"
+        collection_action = {
+            "redesign_new_id": "create_successor_with_new_task_id",
+            "retire": "remove_from_formal_set",
+            "research_only": "retain_research_evidence_no_hardware_collection",
+        }.get(lifecycle_decision, "redesign_with_new_task_id_or_retire_b_track")
+    elif admitted:
+        priority = "release_blocker"
+        collection_action = "collect_on_target_hardware"
+    else:
+        priority = "after_admission_blocker"
+        collection_action = "resolve_admission_blocker_before_collection"
 
     record = {
         "task_id": task_id,
@@ -137,20 +161,37 @@ def inspect_task(task_path: Path, root: Path) -> dict:
         "required_roles": mandatory,
         "automatic_roles": ["torch_musa_eager"],
         "collection_priority": priority,
+        "collection_action": collection_action,
+        "lifecycle_decision": lifecycle_decision,
         "private_manifest_present": manifest_path.is_file(),
         "baseline_path": _relative(baseline_path, root),
         "baseline_present": baseline_path.is_file(),
         "command_template": _command_template(task, root),
+        "resolved_public_implementations": {
+            role: path
+            for role in COMMON_SUPPLIED_ROLES
+            if (path := _known_implementation_path(task, role, root)) is not None
+        },
+        "unresolved_common_roles": [
+            role for role in COMMON_SUPPLIED_ROLES
+            if _known_implementation_path(task, role, root) is None
+        ],
     }
 
     if not baseline_path.is_file():
         record.update(
-            collection_status="not_collected",
-            readiness_status="missing",
+            collection_status=("not_scheduled" if inactive_current_contract else "not_collected"),
+            evidence_complete=False,
+            scoreable=False,
+            release_ready=False,
             missing_roles=mandatory,
             unavailable_roles=[],
             nonpassing_roles=[],
-            issue_codes=["baseline_not_present"],
+            issue_codes=(
+                ["inactive_current_contract"]
+                if inactive_current_contract
+                else ["baseline_not_present"]
+            ),
         )
         return record
 
@@ -167,13 +208,19 @@ def inspect_task(task_path: Path, root: Path) -> dict:
             codes.append("task_id_mismatch")
         if baseline.get("tier") != tier:
             codes.append("tier_mismatch")
-        status = "complete" if derived["status"] == "complete" and not codes else "incomplete"
+        status = (
+            "not_scheduled"
+            if inactive_current_contract
+            else ("complete" if derived["evidence_complete"] and not codes else "incomplete")
+        )
         missing_pair_roles = {_role_from_pair_label(item) for item in derived["missing_rows"]}
         unavailable_roles = {_role_from_pair_label(item) for item in derived["unavailable_rows"]}
         nonpassing_roles = {_role_from_pair_label(item) for item in derived["nonpassing_rows"]}
         record.update(
             collection_status=status,
-            readiness_status=derived["status"],
+            evidence_complete=derived["evidence_complete"],
+            scoreable=derived["scoreable"],
+            release_ready=derived["release_ready"],
             readiness_record_matches=not drift,
             missing_roles=sorted(set(derived["missing_roles"]) | missing_pair_roles),
             unavailable_roles=sorted(unavailable_roles),
@@ -183,7 +230,9 @@ def inspect_task(task_path: Path, root: Path) -> dict:
     except (OSError, ValueError, KeyError, json.JSONDecodeError):
         record.update(
             collection_status="invalid_record",
-            readiness_status="unknown",
+            evidence_complete=False,
+            scoreable=False,
+            release_ready=False,
             missing_roles=mandatory,
             unavailable_roles=[],
             nonpassing_roles=[],

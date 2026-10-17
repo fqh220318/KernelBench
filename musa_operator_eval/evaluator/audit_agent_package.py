@@ -15,6 +15,8 @@ is silent on its own:
     answers are even though it does not contain them;
   * the prompt, the starter or the case list names the upstream project, which
     §2 keeps out of the agent's hands and out of its prompt;
+  * a normative release still carries the legacy provenance object or lacks the
+    opaque source id and independent-reference declaration required by NORM-004/006;
   * a file in the tree is in neither the freeze list nor the editable list, so the
     inventory §4.6 asks for does not describe the package it claims to describe.
 
@@ -26,6 +28,7 @@ is silent on its own:
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import re
 import sys
@@ -54,10 +57,14 @@ MAINTAINER_ONLY_DIRS = {"expert", "naive", "blind"}
 # answers live, even if it does not contain them.
 PRIVATE_REFERENCE = re.compile(r"musa_operator_eval/private/|\.private\.json|/private/")
 
-# §2 keeps the upstream project out of the agent's hands. The task contract may
-# name it under `source`, which is the provenance record §4.1 asks for; nothing
-# else in the package may.
-UPSTREAM_NAMES = re.compile(r"KernelBench|ScalingIntelligence")
+# Legacy development audits retain the old task.json provenance exception so the
+# migration inventory remains inspectable. Normative release audits do not: names are
+# matched case-insensitively so a Python import cannot leak what a heading avoids.
+LEGACY_UPSTREAM_NAMES = re.compile(r"KernelBench|ScalingIntelligence")
+NORMATIVE_UPSTREAM_NAMES = re.compile(r"kernelbench|scalingintelligence", re.IGNORECASE)
+UPSTREAM_ENTRY_ID = re.compile(r"\bkb_l[0-9]+_[0-9]+\b", re.IGNORECASE)
+OPAQUE_SOURCE_ID = re.compile(r"^src_[0-9a-f]{16}$")
+NORMATIVE_STATUSES = {"hardware_pending", "release_ready"}
 
 # The files in a package whose text the agent reads as instructions or as the
 # interface, and which therefore must not name the upstream project.
@@ -83,7 +90,36 @@ def _is_public_golden(relative: Path, public_case_ids: set) -> bool:
     return len(parts) >= 4 and parts[0] == "generated" and parts[1] in public_case_ids and parts[2] == "golden"
 
 
-def audit_package(package_dir: Path, require_public_data: bool = False) -> Dict[str, object]:
+@functools.lru_cache(maxsize=1)
+def _upstream_problem_sources() -> List[tuple]:
+    """Known raw problem bodies available to the maintainer-side release audit."""
+    repository = ROOT.parent
+    rows = []
+    for level in ("level1", "level2", "level3"):
+        directory = repository / "KernelBench" / level
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*.py")):
+            body = path.read_text(encoding="utf-8").strip()
+            if len(body) >= 500:
+                rows.append((path.relative_to(repository).as_posix(), body))
+    return rows
+
+
+def _copied_upstream_problem(package_dir: Path) -> str | None:
+    problem = package_dir / "problem.py"
+    if not problem.is_file():
+        return None
+    body = problem.read_text(encoding="utf-8")
+    for relative, source in _upstream_problem_sources():
+        if source in body:
+            return relative
+    return None
+
+
+def audit_package(
+    package_dir: Path, require_public_data: bool = False, normative: bool = False
+) -> Dict[str, object]:
     """Check one task package against §2 and §4.6.
 
     Returns:
@@ -95,6 +131,41 @@ def audit_package(package_dir: Path, require_public_data: bool = False) -> Dict[
     task = json.loads(task_path.read_text(encoding="utf-8"))
     starter = task.get("starter") or {}
     public_case_ids = _public_case_ids(package_dir)
+
+    if normative:
+        if "source" in task:
+            findings.append("task.json: legacy provenance object is forbidden in a normative release")
+        if not OPAQUE_SOURCE_ID.fullmatch(str(task.get("source_id", ""))):
+            findings.append("task.json: normative release requires an opaque source_id")
+        if task.get("normative_spec") != "1.0.0":
+            findings.append("task.json: normative_spec must be 1.0.0")
+        publication = task.get("publication") or {}
+        if publication.get("release_status") not in NORMATIVE_STATUSES:
+            findings.append(
+                "task.json: publication.release_status must be hardware_pending or release_ready"
+            )
+        if publication.get("reference_origin") != "independent_cpu_reference":
+            findings.append("task.json: normative release requires an independent CPU reference")
+        oracle = task.get("golden_oracle") or {}
+        oracle_path = oracle.get("path")
+        if not oracle_path or not (package_dir / oracle_path).is_file():
+            findings.append(
+                "task.json: normative release must name a shipped golden_oracle file"
+            )
+        if (task.get("lifecycle") or {}).get("decision") != "keep":
+            findings.append("task.json: a normative package must have lifecycle.decision=keep")
+        if (
+            task.get("tier") == "B_library"
+            and (task.get("library_policy") or {}).get("formal_call_surface") != "torch_musa"
+        ):
+            findings.append("task.json: normative B-tier execution must use the torch_musa call surface")
+        if starter.get("cpp"):
+            findings.append("task.json: compiled starter is research-only and cannot enter a normative release")
+        if any(path.is_file() for path in (package_dir / "starter" / "cpp").glob("**/*")):
+            findings.append("starter/cpp: compiled artifacts are research-only and cannot enter a normative package")
+        copied_from = _copied_upstream_problem(package_dir)
+        if copied_from:
+            findings.append(f"problem.py: contains a verbatim upstream problem body ({copied_from})")
 
     for path in sorted(package_dir.rglob("*")):
         if not path.is_file() or "__pycache__" in path.parts:
@@ -124,11 +195,14 @@ def audit_package(package_dir: Path, require_public_data: bool = False) -> Dict[
     for path in _text_files(package_dir):
         relative = path.relative_to(package_dir).as_posix()
         text = path.read_text(encoding="utf-8")
+        upstream_names = NORMATIVE_UPSTREAM_NAMES if normative else LEGACY_UPSTREAM_NAMES
         if PRIVATE_REFERENCE.search(text):
             findings.append(f"{relative}: names a path under the maintainer tree")
-        if UPSTREAM_NAMES.search(text) and path.name != "task.json":
-            findings.append(f"{relative}: names the upstream project outside the contract's source record")
-        if path.suffix in AGENT_FACING_SUFFIXES and UPSTREAM_NAMES.search(text):
+        if upstream_names.search(text) and (normative or path.name != "task.json"):
+            findings.append(f"{relative}: names the upstream project")
+        if normative and UPSTREAM_ENTRY_ID.search(text):
+            findings.append(f"{relative}: exposes an upstream entry identifier")
+        if path.suffix in AGENT_FACING_SUFFIXES and upstream_names.search(text):
             findings.append(f"{relative}: names the upstream project in a file the agent reads as instructions")
 
     # §4.6's inventory has to describe the package it is attached to: a file in
@@ -149,9 +223,14 @@ def audit_package(package_dir: Path, require_public_data: bool = False) -> Dict[
     return {"package": str(package_dir), "passed": not findings, "findings": findings}
 
 
-def audit_packages(packages: List[Path], require_public_data: bool = False) -> Dict[str, object]:
+def audit_packages(
+    packages: List[Path], require_public_data: bool = False, normative: bool = False
+) -> Dict[str, object]:
     """Audit several packages and summarise."""
-    results = [audit_package(package, require_public_data=require_public_data) for package in packages]
+    results = [
+        audit_package(package, require_public_data=require_public_data, normative=normative)
+        for package in packages
+    ]
     findings = [f"{result['package']}: {finding}" for result in results for finding in result["findings"]]
     return {
         "packages": len(results),
@@ -173,13 +252,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--require-public-data", action="store_true",
         help="require generated input and golden manifests for every public smoke case",
     )
+    parser.add_argument(
+        "--normative", action="store_true",
+        help=(
+            "apply Phase 21 public-package rules; hardware_pending packages may pass, "
+            "but only release_ready packages can be released"
+        ),
+    )
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
     packages = args.packages or all_packages()
-    report = audit_packages(packages, require_public_data=args.require_public_data)
+    report = audit_packages(
+        packages, require_public_data=args.require_public_data, normative=args.normative
+    )
     if args.json:
         print(json.dumps(report, indent=2))
     elif report["passed"]:
