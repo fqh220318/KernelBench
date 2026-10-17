@@ -1,5 +1,10 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
+  "lifecycle": {
+    "decision": "research_only",
+    "reason": "The declared causal softmax attention core has a single-call equivalent SDPA path, so this contract cannot satisfy the normative A-tier admission rule.",
+    "successor_policy": "new_task_id_required"
+  },
   "tier": "A_kernel",
   "id": "mingpt_causal_attention_a_v0",
   "name": "MinGPT causal attention block",
@@ -30,10 +35,31 @@
     "shape.C": "n_embd",
     "shape.H": "n_head"
   },
-  "tolerances": {
-    "atol": 0.01,
-    "rtol": 0.01,
-    "max_abs_error": 0.05
+  "tolerance_profiles": {
+    "default": {
+      "float32": {
+        "atol": 0.01,
+        "rtol": 0.01,
+        "max_abs_error": 0.05
+      }
+    }
+  },
+  "performance_protocol": {
+    "timer": "device_event",
+    "warmup": 3,
+    "measurements": 100,
+    "discard_first": 1,
+    "cache": "l2_flush_each_trial",
+    "statistic": "mean",
+    "diagnostics": [
+      "samples",
+      "p10",
+      "p50",
+      "p90",
+      "std",
+      "min",
+      "max"
+    ]
   },
   "tensor_contract": {
     "input_dtypes": [
@@ -96,7 +122,14 @@
   },
   "scoring": {
     "speedup": "upstream_musa_baseline_latency / submission_latency",
-    "ranking": "A-kernel track only; never merged or averaged with the B-library track"
+    "ranking": "A-kernel track only; never merged or averaged with the B-library track",
+    "denominator_policy": {
+      "primary": "upstream_musa",
+      "fallback": "mudnn_fused",
+      "fallback_condition": "only when exact semantic equivalence is established and upstream_musa is unavailable or degenerate",
+      "selection_scope": "per_scoring_case",
+      "selection_record": "private_baseline.denominator_by_case"
+    }
   },
   "starter": {
     "editable": [
