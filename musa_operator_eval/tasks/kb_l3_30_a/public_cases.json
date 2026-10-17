@@ -1,13 +1,12 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "task_id": "swin_transformer_v2_a_v0",
   "tier": "A_kernel",
   "visibility": "public",
-  "set_entry": "kb_l3_30",
   "case_generation": {
     "tool": "musa_operator_eval/tools/generate_cases.py",
     "deterministic": true,
-    "note": "Cases describe parameters and seeds only. Inputs are produced by the problem file's own get_inputs, so this manifest does not pin them."
+    "note": "Cases describe parameters and seeds only. Inputs are produced by the problem file's own get_inputs, so this manifest does not pin them. Public smoke cases use B=1..3; B=4 is reserved for the non-overlapping hidden shape domain."
   },
   "cases": [
     {
@@ -19,7 +18,10 @@
         "B": 1,
         "image": 224
       },
-      "golden": "smoke_001/golden/tensors.json"
+      "attributes": {},
+      "distribution": "uniform",
+      "golden": "smoke_001/golden/tensors.json",
+      "tolerance_profile": "default"
     },
     {
       "case_id": "smoke_002",
@@ -30,7 +32,10 @@
         "B": 2,
         "image": 224
       },
-      "golden": "smoke_002/golden/tensors.json"
+      "attributes": {},
+      "distribution": "uniform",
+      "golden": "smoke_002/golden/tensors.json",
+      "tolerance_profile": "default"
     },
     {
       "case_id": "smoke_003",
@@ -38,10 +43,13 @@
       "seed": 1103,
       "dtype": "float32",
       "shape": {
-        "B": 4,
+        "B": 3,
         "image": 224
       },
-      "golden": "smoke_003/golden/tensors.json"
+      "attributes": {},
+      "distribution": "uniform",
+      "golden": "smoke_003/golden/tensors.json",
+      "tolerance_profile": "default"
     }
   ]
 }

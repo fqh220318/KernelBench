@@ -1,35 +1,69 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
+  "lifecycle": {
+    "decision": "keep",
+    "reason": "The declared cosine window attention core includes learned logit scaling and relative position bias and has no single-call equivalent library path.",
+    "successor_policy": "not_applicable"
+  },
   "tier": "A_kernel",
   "id": "swin_transformer_v2_a_v0",
-  "name": "Swin Transformer V2",
-  "family": "windowed_attention",
-  "set_entry": "kb_l3_30",
-  "source": {
-    "project": "KernelBench problem set",
-    "problem": "KernelBench/level3/30_SwinTransformerV2.py",
-    "record": "sources/attention-source-001.json",
-    "revision": "6b1cea28ddea79af6b295fb9a3e3413f393efe3d",
-    "license": "MIT",
-    "snapshot_location": "KernelBench/level3/30_SwinTransformerV2.py",
-    "snapshot_revision": "8d037710795d00fb23b58a8d43d033ea8f44038e",
-    "note": "The A-tier reference is the KernelBench problem itself; this package adds the contract around it rather than redefining it."
+  "name": "Windowed cosine-attention classifier",
+  "normative_spec": "1.0.0",
+  "publication": {
+    "release_status": "hardware_pending",
+    "reference_origin": "independent_cpu_reference",
+    "note": "Static migration is complete; full oracle replay plus refreshed MUSA correctness and timing evidence are still required before release."
   },
+  "family": "windowed_attention",
+  "source_id": "src_9d42f7b16c8ea305",
   "target_environment": {
     "snapshot_id": "musa-5f9d7b9dd1233a68",
     "record": "environments/musa-5f9d7b9dd1233a68.public.json",
     "backend": "musa",
-    "note": "The task names the environment it was measured in and leaves the device model, architecture and component versions in that record. Latencies are comparable only within one snapshot_id."
+    "note": "The task names the environment it was measured in and leaves device and component details in that record. Latencies are comparable only within one snapshot_id."
   },
   "problem_file": "problem.py",
   "reference": "problem.py:Model",
+  "golden_oracle": {
+    "path": "reference/swin_v2_reference.py",
+    "entrypoint": "swin_v2_classifier",
+    "returns": [
+      "output"
+    ],
+    "state_handling": "explicit_model_state",
+    "context": [
+      "model_state"
+    ],
+    "note": "Independent CPU oracle: the framework exports only deterministically initialized public constructor state; patch embedding, all blocks, attention, merging, pooling and classification are evaluated with NumPy float64 arithmetic."
+  },
   "case_parameters": {
     "shape.B": "batch_size"
   },
-  "tolerances": {
-    "atol": 0.02,
-    "rtol": 0.02,
-    "max_abs_error": 0.1
+  "tolerance_profiles": {
+    "default": {
+      "float32": {
+        "atol": 0.02,
+        "rtol": 0.02,
+        "max_abs_error": 0.1
+      }
+    }
+  },
+  "performance_protocol": {
+    "timer": "device_event",
+    "warmup": 3,
+    "measurements": 100,
+    "discard_first": 1,
+    "cache": "l2_flush_each_trial",
+    "statistic": "mean",
+    "diagnostics": [
+      "samples",
+      "p10",
+      "p50",
+      "p90",
+      "std",
+      "min",
+      "max"
+    ]
   },
   "tensor_contract": {
     "input_dtypes": [
@@ -43,7 +77,7 @@
       "B",
       "image"
     ],
-    "note": "float32 only, which is what every A-tier measurement in sets/attention was taken at and what the hand-written kernels in this repository were tuned for."
+    "note": "float32 only. Public smoke cases use B=1..3; B=4 remains inside the contract but is reserved for the non-overlapping hidden shape domain."
   },
   "prohibited": [
     "muDNN",
@@ -59,7 +93,7 @@
     "entrypoint": "ModelNew",
     "language": "python",
     "fallback_kernel": "musa_inline",
-    "note": "KernelBench-style submission: a Python module defining ModelNew, with no library compute in the core."
+    "note": "A Python module defining ModelNew, with no library compute in the declared attention core."
   },
   "attempt_budget": {
     "max_attempts": 20,
@@ -73,26 +107,33 @@
   "kernel_scope": {
     "level": "attention_core",
     "enforced_by": "attention_entry_point",
-    "enforced_note": "The audit rejects a call to a fused attention entry point. It does not reject every torch op, because an nn.Linear holding weights and an nn.Linear computing a projection are the same source and only the author knows which is which; the two lists below are what a reader audits against.",
+    "enforced_note": "The audit rejects a fused attention entry point. The must/may lists below define the boundary for surrounding framework operations.",
     "must_be_in_kernel": [
       "window QK^T",
-      "cosine normalisation and logit scale",
-      "relative position bias",
-      "softmax",
-      "P·V"
+      "cosine normalisation and learned logit scale",
+      "continuous relative-position bias",
+      "shift mask and softmax",
+      "P*V"
     ],
     "may_stay_library": [
-      "patch embedding",
-      "patch merging",
+      "QKV and output projections",
+      "patch embedding and patch merging",
       "LayerNorms",
       "the MLP stages",
       "the classifier head"
     ],
-    "note": "A full Swin V2 classifier. The window attention is in scope, including the bias path, because the bias is part of the attention rather than plumbing around it."
+    "note": "The scored output is the full four-stage classifier, while the declared implementation target is every window-attention core, including the bias and shift-mask paths."
   },
   "scoring": {
     "speedup": "upstream_musa_baseline_latency / submission_latency",
-    "ranking": "A-kernel track only; never merged or averaged with the B-library track"
+    "ranking": "A-kernel track only; never merged or averaged with the B-library track",
+    "denominator_policy": {
+      "primary": "upstream_musa",
+      "fallback": "mudnn_fused",
+      "fallback_condition": "only when exact semantic equivalence is established and upstream_musa is unavailable or degenerate",
+      "selection_scope": "per_scoring_case",
+      "selection_record": "private_baseline.denominator_by_case"
+    }
   },
   "starter": {
     "editable": [
@@ -110,65 +151,44 @@
       "PROMPT.md",
       "problem.py",
       "public_cases.json",
+      "reference/swin_v2_reference.py",
       "semantics.json",
       "starter/build.py",
-      "starter/cpp/abi_io.h",
-      "starter/cpp/build.sh",
-      "starter/cpp/runner.cc",
       "task.json"
     ],
     "build": {
-      "command": "python musa_operator_eval/evaluator/run_task.py --task-dir musa_operator_eval/tasks/kb_l3_30_a --submission model_new.py --backend musa --precision fp32",
-      "note": "§5 step 8's order: the static audit runs before this build, so a rejected submission never spends a compile.",
+      "command": "python musa_operator_eval/evaluator/run_task.py --task-dir . --submission model_new.py --backend musa --precision fp32",
+      "note": "The static audit runs before compilation, so a rejected submission never spends a compile.",
       "script": "starter/build.py"
     },
     "self_test": {
-      "command": "python musa_operator_eval/evaluator/run_task.py --task-dir musa_operator_eval/tasks/kb_l3_30_a --submission model_new.py --static-only",
-      "note": "Runs without a device: case overrides, golden cross-check and the source audit."
+      "command": "python musa_operator_eval/evaluator/run_task.py --task-dir . --submission model_new.py --static-only",
+      "note": "Runs without a device: case coverage, independent-golden integrity and source audit."
     },
     "abi": {
-      "inputs": "<generated-dir>/<case_id>/input/tensors.json plus one .bin per tensor",
-      "outputs": "<generated-dir>/<case_id>/golden/tensors.json plus one .bin per tensor",
-      "transport": "raw little-endian tensors plus a JSON manifest",
+      "inputs": "in-process torch tensors generated from the declared case contract",
+      "outputs": "one in-process output tensor",
+      "transport": "Python ModelNew invocation in the evaluator process",
       "submission": "a Python module defining ModelNew",
-      "runner": "musa_operator_eval/evaluator/run_task.py, which imports torch through the framework's evaluator",
-      "runner_imports_libtorch": true,
-      "deviation": "§4.6 asks the runner not to import libtorch, so that ATen cannot be reached from the graded process. This package does not meet that: the submission is a Python module whose forward is called in the evaluator's own process, which is where ATen lives. What enforces the tier boundary instead is the source audit -- the A tier's ban on the fused attention entry point is a check on the submission's text, not an isolation guarantee -- and the B tier's dispatch trace, which says which path earned the number. Recorded here rather than left implicit, because a reader comparing this ABI against §4.6 would otherwise have to infer it."
-    },
-    "cpp": {
-      "path": "starter/cpp",
-      "build": "starter/cpp/build.sh",
-      "editable": [
-        "starter/cpp/kernel.mu"
-      ],
-      "frozen": [
-        "starter/cpp/abi_io.h",
-        "starter/cpp/runner.cc",
-        "starter/cpp/build.sh"
-      ],
-      "entrypoint": "kernel_entry",
-      "abi": "the runner reads <input-dir>/tensors.json and its .bin files, calls kernel_entry, and writes <output-dir>/tensors.json and its .bin files",
-      "runner_imports_libtorch": false,
-      "links": "the MUSA runtime plus the contract's whitelist, applied through build.sh --extra-library; libtorch is not among them",
-      "command": "starter/cpp/build.sh --submission <dir with kernel.mu> --build-dir <dir> [--extra-library <name>]",
-      "regions": [
-        "device_kernel",
-        "host_launch"
-      ],
-      "model_state": {
-        "source": "problem.py:Model.state_dict()",
-        "materialized_by": "evaluator/materialize_model_state.py",
-        "tensor_prefix": "state_",
-        "seeded_by": "the case's seed and its own parameters, in the framework's construction order (set_seed, get_init_inputs, set_seed, Model), specialized with the case's overrides exactly as run_task.py and generate_cases.py specialize it -- two cases of one task can need differently shaped weights"
-      },
-      "case_configuration": {
-        "source": "problem.py:get_init_inputs()",
-        "args": [],
-        "note": "A case re-binds module constants, and the reference's construction reads them, so the evaluator stages the case's own arguments as `case.json` beside its tensors: a torch-free submission cannot recover them from the input tensors, and two cases of one task can differ here. Empty means this reference takes no arguments."
-      }
+      "runner": "musa_operator_eval/evaluator/run_task.py, which imports torch through the framework evaluator",
+      "runner_imports_libtorch": true
     }
   },
   "hyperparameters": {
-    "window_size": "from the reference's pretrained window sizes, one per stage"
+    "image_size": 224,
+    "patch_size": 4,
+    "window_size": 7,
+    "depths": [
+      2,
+      2,
+      6,
+      2
+    ],
+    "num_heads": [
+      3,
+      6,
+      12,
+      24
+    ]
   }
 }

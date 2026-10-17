@@ -1,8 +1,7 @@
 {
   "schema_version": "1.0.0",
   "family": "windowed_attention",
-  "set_entry": "kb_l3_30",
-  "note": "The A tier and the B tier of one family share this contract, so their goldens and case generators stay interchangeable.",
+  "note": "This contract freezes the public windowed-attention classifier semantics; provenance and source-entry mappings are maintained outside the Agent package. Public smoke cases use B=1..3 and B=4 is reserved for the hidden shape domain.",
   "input": "x of shape (B, 3, image, image)",
   "output": "logits of shape (B, num_classes); this is a whole classifier, not an attention core",
   "patch_embed": "4x4 convolution with stride 4, then LayerNorm",
@@ -53,14 +52,12 @@
       "role": "output",
       "shape": [
         "B",
-        "C",
-        "H",
-        "W"
+        "classes"
       ],
       "dtypes": [
         "float32"
       ],
-      "layout": "BCHW",
+      "layout": "BC",
       "stride": "contiguous"
     }
   ],
