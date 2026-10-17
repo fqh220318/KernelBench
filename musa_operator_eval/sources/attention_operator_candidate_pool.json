@@ -264,7 +264,11 @@
       "priority": "P0",
       "decision": "shortlisted",
       "source_refs": ["mate_attention", "tilelang_musa_attention", "paddle_musa_attention", "vllm_musa_attention"],
-      "local_anchors": [],
+      "local_anchors": [
+        {"path": "musa_operator_eval/research/attention_p0/cpu_reference.py", "role": "NumPy float64 CPU reference"},
+        {"path": "musa_operator_eval/research/attention_p0/semantic_contracts.json", "role": "pre-task semantic contract"},
+        {"path": "musa_operator_eval/research/attention_p0/capability_probe_matrix.json", "role": "not-run hardware probe matrix"}
+      ],
       "semantic_scope": "以 packed Q/K/V、cu_seqlens 和 max_seqlen 描述异长 batch，覆盖 MHA/GQA、空序列、零长度尾段、cross-attention 和 causal 对齐。",
       "dynamic_dimensions": ["total_q", "total_kv", "batch", "heads_q", "heads_kv", "head_dim", "max_seqlen_q", "max_seqlen_kv"],
       "target_profiles": ["s5000_fp16", "s5000_bf16"],
@@ -273,7 +277,7 @@
       "b_tier": {"status": "promising", "gap_hypotheses": ["unsupported_shape", "semantic_mismatch", "layout_mismatch"], "rationale": "cu_seqlens、GQA 和非等长 causal 存在明确能力边界，可由融合路径、组合路径和兜底路径分派。"},
       "hardware_validated": false,
       "risks": ["不同 API 的 causal 对齐约定可能不同", "空序列和 packed stride 可能触发未定义行为"],
-      "next_evidence": ["建立 top-left/bottom-right 两套对照探针并只保留一种任务语义", "扫描空段、odd head_dim 和极端长度分布"]
+      "next_evidence": ["在目标机执行 bottom-right 合同与 top-left 负对照矩阵", "记录空段、odd head_dim、极端长度和 stride 的 dispatch trace"]
     },
     {
       "candidate_id": "attention_varlen_backward",
@@ -300,7 +304,11 @@
       "priority": "P0",
       "decision": "shortlisted",
       "source_refs": ["mate_attention", "vllm_musa_attention", "tilelang_musa_attention"],
-      "local_anchors": [],
+      "local_anchors": [
+        {"path": "musa_operator_eval/research/attention_p0/cpu_reference.py", "role": "NumPy float64 CPU reference"},
+        {"path": "musa_operator_eval/research/attention_p0/semantic_contracts.json", "role": "pre-task semantic contract"},
+        {"path": "musa_operator_eval/research/attention_p0/capability_probe_matrix.json", "role": "not-run hardware probe matrix"}
+      ],
       "semantic_scope": "同一 batch 内每条请求独立选择 causal/non-causal，并保持 varlen、KV cache 和跨注意力语义；不能把 flag tensor 错转成单一 bool。",
       "dynamic_dimensions": ["batch", "causal_per_sequence", "sequence_q", "sequence_kv", "heads", "head_dim"],
       "target_profiles": ["s5000_fp16", "s5000_bf16"],
@@ -309,7 +317,7 @@
       "b_tier": {"status": "promising", "gap_hypotheses": ["semantic_mismatch", "multi_operator_required", "unsupported_shape"], "rationale": "vLLM-MUSA 已显式拒绝把 flag tensor 传给 MATE FA3 标量参数，并选择另一 backend，形成可验证的真实分派边界线索。"},
       "hardware_validated": false,
       "risks": ["容易与普通 causal bool 任务混淆", "替代 backend 的 MUSA 可用性仍需设备验证"],
-      "next_evidence": ["记录 scalar causal 与 tensor causal 的真实 dispatch trace", "设计混合 causal batch 的独立 golden"]
+      "next_evidence": ["在目标机记录 scalar 与逐序列 tensor causal 的真实 dispatch trace", "用已冻结的混合 causal CPU reference 生成设备对照记录"]
     },
     {
       "candidate_id": "paged_kv_attention_decode",
@@ -318,7 +326,11 @@
       "priority": "P0",
       "decision": "shortlisted",
       "source_refs": ["mate_attention", "mutlass_attention", "mt_flashmla", "tilelang_musa_attention", "vllm_musa_attention", "paddle_musa_attention"],
-      "local_anchors": [],
+      "local_anchors": [
+        {"path": "musa_operator_eval/research/attention_p0/cpu_reference.py", "role": "NumPy float64 CPU reference"},
+        {"path": "musa_operator_eval/research/attention_p0/semantic_contracts.json", "role": "pre-task semantic contract"},
+        {"path": "musa_operator_eval/research/attention_p0/capability_probe_matrix.json", "role": "not-run hardware probe matrix"}
+      ],
       "semantic_scope": "从 page/block table 读取 KV cache 完成 decode Attention，覆盖 page size、cache_seqlens、GQA/MQA、空 page、非连续 block 和 LSE 输出。",
       "dynamic_dimensions": ["batch", "query_tokens", "kv_length", "page_size", "pages", "heads_q", "heads_kv", "head_dim"],
       "target_profiles": ["s5000_fp16", "s5000_bf16"],
@@ -327,7 +339,7 @@
       "b_tier": {"status": "promising", "gap_hypotheses": ["unsupported_shape", "layout_mismatch", "semantic_mismatch"], "rationale": "page size、block table、GQA 比例和 cache layout 提供明确的融合路径边界与兜底需求。"},
       "hardware_validated": false,
       "risks": ["不同实现的 page size 和 cache layout 不同", "decode 小 query 的计时易受 launch 噪声影响"],
-      "next_evidence": ["建立 page table 越界与重复 page 的语义约束", "扫描 page size、KV 长度和 GQA 比例并记录分派"]
+      "next_evidence": ["在目标机执行 page table 越界、重复 page 和边界长度矩阵", "扫描 page size、KV 长度和 GQA 比例并记录 dispatch trace"]
     },
     {
       "candidate_id": "kv_cache_append_rope_attention",
