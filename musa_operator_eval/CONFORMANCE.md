@@ -1,6 +1,19 @@
 # Conformance with the guide
 
-`摩尔线程musa算子构建指南.md` is the specification this set is built to. This file
+> **Phase 21 status notice (2026-10-05):** the preserved guide contains conflicting
+> architecture and disclosure clauses. The current target is now
+> `docs/musa_operator_evaluation_normative_spec_v1.md`, with clause-by-clause status in
+> `docs/musa_operator_evaluation_requirement_traceability_matrix.md`. The audit below
+> predates that arbitration. Its measurements remain evidence, but any `Met` claim is
+> historical until re-audited against the normative specification. Phases 22--24 have
+> migrated all three retained contracts to `hardware_pending`, classified eight current
+> contracts as `research_only`, and closed the repository-side contract, scoring and
+> deployment boundaries.
+> Compiled/direct-muDNN scoring and the remaining copied references are not accepted
+> compliance.
+
+`docs/musa_operator_evaluation_guide.md` is the preserved specification this set is
+built to. This file
 records, requirement by requirement, where the repository satisfies it and where it
 does not, so that a shortfall is a decision a reader can see rather than something
 to be discovered later.
@@ -8,6 +21,10 @@ to be discovered later.
 Every claim here is checked by something in `tests/` or by a command whose output is
 quoted. Where a requirement is met by a declaration rather than by an enforcement,
 that is said in the row.
+
+`IMPLEMENTATION_DECISIONS.md` records subordinate implementation choices without
+rewriting the preserved guide or the normative specification. A decision remains a
+shortfall until the implementation and its tests enforce the normative target.
 
 ## §1 The two tiers
 
@@ -30,11 +47,12 @@ that is said in the row.
 Checked by `evaluator/audit_agent_package.py` (all 11 packages) and
 `tests/test_private_assets.py`.
 
-**Shortfall, stated.** The evaluator's scripts are committed to this repository, so
-anyone with the checkout can read them; a committed file cannot be un-published by a
-later export step. `evaluator/README.md` records the production answer: mount that
-directory from a private repository or an access-controlled store, the same way
-`private/` is meant to be mounted.
+**Production boundary.** The evaluator scripts committed here are deliberately a public
+development mirror/mock, not the production secret evaluator. Release-package
+acceptance rejects both `evaluator/` and `private/`, and records that production must
+mount its evaluator from a private repository or access-controlled store. Repository
+tests enforce that package boundary; the deployment system remains responsible for
+actually supplying the private mount.
 
 ## §3 Directory structure and the starter
 
@@ -60,10 +78,11 @@ requirements.
 
 Every package records the tensor signature, the dynamic-axis ranges, the ABI, the
 determinism rule and §4.2's three pinned items — including the families where a mask
-cannot arise, which say `not_applicable` rather than leaving the question open. The
-two tiers of one entry share one semantic contract byte for byte, which
-`tests/test_task_packages.py` checks; the graded dtype differs by tier and lives in
-`tensor_contract`.
+cannot arise, which say `not_applicable` rather than leaving the question open. A
+formal contract is classified exactly once as A or B over its complete semantic
+domain. The old A/B pairs remain byte-comparable only as legacy research assets;
+`tests/test_task_packages.py` checks that every such pair is `research_only`, so it
+cannot become two formal tasks again.
 
 ## §4.3 Case lists
 
@@ -79,8 +98,9 @@ library-gap reasons. Four of the five B packages reach one (`unsupported_shape`)
 pilot reaches two (`unsupported_shape` and `semantic_mismatch`). Inventing a second
 gap would mean grading a configuration the library actually serves.
 
-The four entry-scoped packages are therefore `blocked_gap_coverage`, not admitted
-or scoreable. Their old performance numbers remain historical evidence only.
+The four entry-scoped packages are therefore `blocked_gap_coverage`, explicitly
+`decision=reject / lifecycle=research_only`, and are neither admitted nor scoreable.
+Their old performance numbers remain historical evidence only.
 `make_private_manifest.py`, `record_admission.py`, the release packager, both
 evaluation drivers and `rank.py` refuse to turn that evidence into a score. The
 attention-set ledger also records `scoreable: false`. The private evidence carries an
@@ -103,45 +123,61 @@ attention op whose neighbours in the block are elementwise work
 (`multi_operator_required` unreachable — and it is a property of the task, not of a
 case, so it cannot separate a gap case from an ordinary one).
 
-**Shortfall, stated.** §4.3 asks the hidden shape range not to overlap the public one.
-That holds for ten packages; `swin_transformer_v2_a_v0` cannot honour it, because the
-reference partitions the image into windows after four downsampling stages and only a
-few image sizes survive them. Its hidden cases move the batch instead, which the
-manifest's `case_generation.note` says.
+**Swin split, made explicit.** §4.3 asks the hidden shape range not to overlap the public
+one. `swin_transformer_v2_a_v0` cannot vary the image size faithfully: the reference is
+built for 224 after four downsampling stages. The batch axis remains legal from 1 through
+4, so the public smoke list now occupies B=1/2/3 and reserves B=4 for the hidden shape
+domain. The public manifest and semantics contract both state that partition, and a
+repository test prevents a future smoke-case edit from consuming the reserved boundary.
 
-## Across the grades: one bar per task
+## Across the grades: one named tolerance profile per case
 
-The graded tolerance is resolved once, from the contract: `tolerances.max_abs_error`
-is a loosen-only override of the framework's per-dtype floor
-(`get_tolerance_for_precision`), applied to `atol` and `rtol` alike, and both drivers
-ask the same question of the same declaration. `run_binary.py` replicates the rule
-rather than importing torch, and a device test compares the replica against
-`get_tolerance_for_precision` and `resolve_tolerance` so a change there fails a test.
+Every case selects a named entry from `task.json:tolerance_profiles`. Its `atol`,
+`rtol` and `max_abs_error` are independent contract limits: the framework's per-dtype
+floor (`get_tolerance_for_precision`) can raise only `atol` and `rtol`, while the
+absolute-error ceiling remains exactly the declared `max_abs_error`. A case passes
+only when both `allclose(atol, rtol)` and the independent maximum-error ceiling pass.
+The Python evaluator, the legacy binary diagnostic and the baseline collector use
+the same resolution rule, and reports retain the profile plus all three effective
+limits.
 
 This replaced a real inconsistency: the hidden manifests carried a per-case
 `atol`/`rtol` (0.01 or 0.02) that only the compiled driver read, while the Python path
 graded at 0.05 -- two bars for one task, where a submission at error 0.03 passed one
-path and failed the other. The per-case field is gone from the schema and from all
-twelve manifests, `additionalProperties: false` makes a leftover key invalid, and every
-report row and every report now records the `tolerance_used`.
+path and failed the other. The ambiguous scalar field is gone from the schema and all
+11 task contracts plus all 35 public cases select explicit profiles;
+`additionalProperties: false` makes a leftover key invalid, and every evaluated row
+records `tolerance_used`.
 
 ## §4.4 Baselines
 
 The schema and collector now make the complete roster mechanical. Every hidden
-case must have exactly one usable row for all four A roles (`upstream_musa`,
+case must have exactly one status-bearing row for all four A roles (`upstream_musa`,
 `mudnn_fused`, `torch_musa_sdpa`, `torch_musa_eager`) or all six B roles (those
-four plus `naive_library_composition` and `expert_dispatch`). A row may honestly
-record `unavailable` with a reason, but that is evidence of a missing baseline,
-not a completed measurement. The derived `readiness` block therefore remains
-`incomplete`, and the admission gate, admission recorder and ranker refuse it.
+four plus `naive_library_composition` and `expert_dispatch`). Missing or duplicate
+role/case rows make the derived `evidence_complete` state false.
+
+**Roster completeness is not scoreability.** §4.4 asks each implementation row to
+record a value and a status, while §4.3 requires B-tier gap cases where a fused
+library may be unsupported by definition. A reasoned `unavailable`, `unsupported`,
+`error` or `fail` row therefore completes the observation roster but never becomes
+a latency. `candidate_gate.py` separately requires passing, positive-latency
+`naive_library_composition` and `expert_dispatch` rows for every case;
+`record_admission.py` additionally requires their correctness and the expert trace;
+and `rank.py` requires a frozen passing denominator and candidate runtime for every
+scoring Case. Any missing Case makes the entire task unranked rather than producing a
+partial geomean. This separation prevents
+both hiding a failed comparison row and requiring a fused library to pass a case
+chosen because the library does not cover it.
 
 This public checkout deliberately does not contain the maintainer tree. The
-redacted `collection/baseline_collection_plan.json` currently reports 11/11
-records as `not_collected` here: seven are release blockers (six A tasks and the
-admitted family B pilot), while four entry-scoped B tasks are collected only
-after their separate §4.3 gap-coverage blocker is resolved. This is an inventory
-of work still requiring the private mount and target device, not a claim that
-the measurements are complete.
+redacted `collection/baseline_collection_plan.json` separates three keep contracts
+from eight `inactive_current_contract/not_scheduled` research-only contracts. Of the
+keep set, all three tasks are `hardware_pending` after static migration. The four
+entry-scoped B research packages cannot
+reach a second gap category, while four A research packages have a single-call equivalent
+library path. Any redesign needs a new versioned contract rather than another baseline
+run. This remains an inventory, not a claim that measurements are complete.
 
 **One protocol, and it is the framework's.** A baseline's `latency_ms` is a denominator
 and a `run_task.py` report's `runtime` is a numerator, so the two have to be the same
@@ -190,26 +226,26 @@ cache costs the most, and no decision moved with them:
 | `sdpa_forward_b_v0` (the pilot) | 7.811 | 6.152 |
 
 **Historical evidence, not current completion.** Earlier maintainer-side records
-measured useful rows, but they predate the strict readiness contract and include
-required roles marked `unavailable`. When mounted, the inventory will classify
-those records as incomplete until they are re-collected with the complete roster.
-The observations below remain useful explanations of the backlog; they are not
-accepted as scoreable baselines.
+measured useful rows, but they predate the current complete role/case roster and the
+unified timing protocol. When mounted, they must be re-derived and re-collected;
+documented non-passing rows may complete the roster, but only passing rows from the
+score-critical roles can enter a gate or ratio. The observations below remain useful
+explanations of the backlog; they are not accepted as current scoreable baselines.
 
 The A tier records `mudnn_fused` as `unavailable` for one measured reason: this tier is
 graded at float32, and `musa::dnn::ScaledDotProductAttention::RunFlash` refuses it with
 the library's own words -- `Unsupport Type FLOAT` -- at every shape tried (head dim
 32/64/128/160/192, sequence 1/128/512/1024), while the same call succeeds at float16.
-`torch_musa_sdpa` is **measured** on the four A families whose ledger entry has a B
-track: at float32 the entry point answers, dispatching to
+`torch_musa_sdpa` is **measured** on four historical A research records whose source
+entries also have a legacy B research record: at float32 the entry point answers, dispatching to
 `aten::_scaled_dot_product_attention_math_musa`, and the implementation measured under
-that name is the module the B tier's own expert is. The two A families with no B track
+that name is the module the legacy B research record's expert is. The two retained A tasks
 record why the entry point is not a faithful implementation of their reference at all,
 quoting the ledger's measurements: `swin_transformer_v2_a_v0`'s only remaining lever was
 a head dimension out of reach of a byte-identical reference, and
 `relu_causal_attention_a_v0`'s reference applies ReLU to the scores, which no library
 path expresses. `tests/test_private_assets.py` holds that rule against the ledger, so a
-family with a B track cannot come back with an unmeasured library row.
+historical paired record cannot come back with an unmeasured library row.
 
 The four entry-scoped B packages record `upstream_musa`, `mudnn_fused` and
 `torch_musa_eager` as `unavailable`: no upstream answer exists in this checkout for
@@ -246,26 +282,14 @@ list, the build and self-test commands, the ABI and — for the B tier — the l
 whitelist, which a test requires to equal `library_policy`. The static audit reads
 `frozen` from there, so the boundary it draws is the declared one.
 
-**Met on the compiled path.** §4.6 asks the runner not to import libtorch, so ATen
-cannot be reached from the graded process. Every package ships `starter/cpp`: a
-frozen `runner.cc` and `abi_io.h` that read `<input-dir>/tensors.json` and its
-`.bin` files, call `kernel_entry`, and write `<output-dir>/tensors.json` and its
-`.bin` files; a frozen `build.sh` that compiles with `mcc` against the MUSA runtime
-and `--extra-library` for whatever the contract whitelists; and one editable
-`kernel.mu`. The runner's dynamic section names `libmusart` and the C runtime and
-no torch, which is what makes the sentence true of the graded process.
+**Normative resolution.** The Python `ModelNew` path is the sole scored path. A migrated
+normative package therefore removes `starter/cpp`; the compiled runner and direct-library
+adapter remain maintainer-side diagnostics and cannot supply admission, ranking or an
+official denominator. All three keep tasks enforce this boundary now. Legacy
+research-only packages still carry the old compiled assets for reproducibility only.
 
-`evaluator/run_binary.py` drives it through §4.7's stages against the same goldens.
-On the device, `private/scaled_dot_product_attention_a_v0/compiled/kernel.mu` — a
-worked submission kept under `private/` because it is an answer — passes all nine
-hidden cases with a worst absolute error of 2.2e-06 against the 0.05 bar,
-over stages `environment, case_generation, static_audit, build, evaluation`.
-
-**Deviation, recorded, Python path only.** The Python path remains a module whose
-`forward` is called in the evaluator's own process, which is where ATen lives, so
-the requirement is not met there and `starter.abi.deviation` says so in every
-package. The compiled path is the compliant one; the Python path is kept for the
-families whose dispatch is only reachable through the framework's bindings.
+The compiled-path evidence below is historical diagnostic evidence, not a current scored
+architecture claim.
 
 **Met on the compiled path for the level-1 family, and verified end to end.**
 muDNN's host API is present on this machine and needs no torch: the toolkit ships
@@ -359,9 +383,9 @@ is legitimate exactly where the task hands over everything a torch-free process 
 case's tensors, the reference's state when it has one, and the construction arguments. Four
 of the eleven packages meet that and have an answer (the two level-1 families, the
 layer-normed ViT attention and the two minGPT families). What does not is stated with its
-reason: `swin_transformer_v2_a_v0` and `relu_causal_attention_a_v0` have no B track in the
-ledger at all, so a library-path answer for them would measure something the ledger already
-decided is not a task; and the A tiers of the ViT and minGPT families cannot use library
+reason: `swin_transformer_v2_a_v0` and `relu_causal_attention_a_v0` are exclusively A-tier
+tasks, so a library-path answer would be a different contract; and the legacy A research
+records of the ViT and minGPT families cannot use library
 calls even in principle, so their compiled path would mean hand-writing the projection,
 attention, MLP and normalisation kernels rather than dispatching -- a different job from
 this one, and one the tier does not require of a submission.
@@ -392,15 +416,12 @@ with the stability re-run, performance, summary. `run_task.py` reports the stage
 ran; a stage that fails is not followed by the next one, which the device runs show
 as `skipped` rows.
 
-The same chain is driven over the compiled path by `evaluator/run_binary.py`, which
-runs the package's `starter/cpp/build.sh`, checks what the artifact links, runs the
-runner per case and compares its tensors against the same goldens. On the device it
-reports `[environment, case_generation, static_audit, build, link_whitelist_check,
-evaluation]` for a B-tier task, and the link stage reads three artifacts including
-the linked `runner` itself (`libmusart.so.1.0`, `libmusa.so.1.0`, `libmudnn.so.2`
-plus plumbing, 69 undefined and 10 defined symbols) — which is the first time this
-stage has had a real B-tier artifact to check rather than "no compiled artifact was
-produced".
+`evaluator/run_binary.py` can still drive the compiled diagnostic path against the same
+goldens, but a normative release neither ships nor scores that path. The Python case loop
+now loads each generated input/golden pair and passes it into the framework evaluator;
+the report records `correctness_reference=independent_golden`. Golden digest replay is
+therefore no longer mistaken for correctness authority while `problem.py` silently
+decides the verdict.
 
 **Compiled sub-stage short-circuit, corrected.** The compiled driver formerly ran
 every case in one flat loop and chose an exit code afterward. A correctness failure
@@ -478,32 +499,33 @@ cover it, including that a suffixless executable is checked and its libraries re
 
 ## §4.8 Schema validation
 
-Six schemas, versioned, validated by value with the tier rules. In this public
-checkout, `validate_schemas.py --all --engine stdlib` reports 36/36 valid (the
+Seven schemas, versioned, validated by value with the tier rules. In this public
+checkout, `validate_schemas.py --all --engine stdlib` reports 38/38 valid (the
 two baseline templates are included in discovery rather than treated as prose).
 Maintainer-side baselines now require a derived readiness record and the complete
 §4.4 roster, so the earlier 68/68 device-tree result is historical and must not be
 reused: after mounting `private/`, regenerate the collection inventory and run
 validation again. Tests that require the maintainer tree skip when it is absent;
-the public checkout's private-asset module currently reports 15 passed and 11
-skipped.
+the full current test totals must therefore be read from the validation run rather
+than copied from an older public-checkout count.
 
 ## §5 Build steps
 
 Environment comparison, source provenance, per-family semantics, tiered contracts,
 public case generation, evaluator assembly and separate tracks are implemented.
 True §4.4 baseline completion is still pending the private mount and target device:
-the redacted inventory reports 11 `not_collected` records in this checkout, and no
-ranking is current until those records are complete under the new readiness gate.
+the redacted inventory reports three active `not_collected` records and eight inactive
+current contracts in this checkout. No ranking is current until the active records are
+`evidence_complete`, `scoreable` and `release_ready`.
 
 **Met.** §5 step 8's "separately split, separately ranked" is enforced in two places:
 the scoring blocks and case lists never mix tiers, and `evaluator/rank.py` produces
 the two tables -- never a combined figure, because a single number across a device
 kernel and a library dispatch is a number about nothing. Each ratio is the tier's
-own denominator, read from the baseline's `scoring.speedup_denominator`
-(`upstream_musa` for A, `expert_dispatch` for B), computed per case over the cases
-where the reference has a passing measurement on the same case, and summarised as a
-geometric mean. Both sides of a ratio are milliseconds, and since §4.4's change both
+own denominator, frozen in `scoring.denominator_by_case` (`upstream_musa`, or a proved
+exact `mudnn_fused` fallback, for A; `expert_dispatch` for B). A ratio must exist for
+every scoring Case before their geometric mean is computed. Both sides of a ratio are
+milliseconds, and since §4.4's change both
 come from the framework's own timing loop, so a ratio is between two implementations
 rather than between two protocols. The unit is the one the baseline is in: the
 framework's dataclass comment says microseconds and the recorded values say otherwise,

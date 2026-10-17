@@ -1,7 +1,19 @@
 # MUSA Operator Evaluation
 
-Task contracts, capability evidence and admission tooling for the MUSA A/B
-operator evaluation tracks. Version 0 is scoped to Attention families; other
+> **Phase 21 migration notice:** the current executable target is
+> `docs/musa_operator_evaluation_normative_spec_v1.md`; the resolution of every
+> conflicting source requirement is in
+> `docs/musa_operator_evaluation_requirement_traceability_matrix.md`. The existing
+> One B-tier pilot and both retained A-tier tasks are `keep / hardware_pending`;
+> four rejected B contracts and four A contracts with a single-call equivalent library
+> path are explicitly `research_only`. All three keep contracts have completed static
+> migration, but none of the 11 tasks is `release_ready`.
+> Phases 22-24 are complete on the software/control-plane side. The three retained
+> tasks remain `hardware_pending`; Phase 25 must replay them on the target device
+> before any baseline or task becomes `release_ready`.
+
+Task contracts, capability evidence and admission tooling for the mutually exclusive
+MUSA A/B task classes. Version 0 is scoped to Attention families; other
 families must add their own semantic contract instead of reusing
 Attention-specific fields.
 
@@ -12,27 +24,26 @@ the framework has no notion of and drives them end to end: A/B contracts, hidden
 case policy, dispatch evidence, complete baseline rosters, compiled submissions,
 stage short-circuiting, admission and separate rankings.
 
-Both tracks are packaged, but around different things.
+Each formal task is classified exactly once as A or B. Historical paired directories
+remain only as `research_only` evidence and cannot be packaged, baselined or ranked.
 
-An A-tier task *is* a KernelBench problem: the repository holds 107 of them under
-`KernelBench/level1_musa/` and `KernelBench/level3_musa/`, each with its
-hand-written answer, and `sets/attention/` records which of them belong to the
-attention family and what has been measured on them. An A-tier package does not
-redefine that problem — it carries a copy of it, verified byte for byte by a test,
-and adds the contract around it: what the submission may not call, at which
-precision it is graded, and which cases it is shown.
+An A-tier candidate starts from the KernelBench problem inventory, but a normative
+package is an independently specified operator contract. It exposes an opaque source
+identifier, a public execution model and an independent CPU oracle; the private registry
+keeps the reverse source mapping. Legacy research-only A packages retain byte-identical
+problem copies solely so historical evidence stays reproducible.
 
 A B-tier task needs something the framework has no notion of, because it is graded
 on how the answer was reached rather than only on what it computes: a library
 whitelist, a dispatch order, and a trace the submission has to emit. Its package
-carries that contract. `sdpa_forward_pilot/` is the family-scoped form of it — its
-problem generalises the attention core past what any one KernelBench entry asks
-for, so it names the entries it covers instead of claiming one.
+carries that contract. `sdpa_forward_pilot/` is the family-scoped form of it; its
+public contract generalises the attention core while the source-to-entry mapping stays
+in the private provenance registry.
 
-Task directories are named `<set entry>_a` and `<set entry>_b`, and each package
-declares the entry it realises under `set_entry`. `tests/test_task_packages.py`
-checks that every entry the set marks eligible has a package for that tier, and
-that the two tiers of one entry share a semantic contract.
+Legacy research directories are named `<set entry>_a` and `<set entry>_b`. Normative
+packages do not expose `set_entry`; maintainer-side tests recover that relation from the
+private registry when it is mounted. `tests/test_task_packages.py` checks set coverage,
+the isolation of legacy paired research assets and the frozen lifecycle decisions.
 
 
 The one framework change that lives with this work: a problem file may declare
@@ -43,11 +54,11 @@ The A tier adds one check to the shipped defaults: `attention_entry_point`, whic
 rejects a call to a fused attention entry point. That is not because every torch
 op is forbidden — it is not, and the answers in `KernelBench/level3_musa/` hold
 their projections as `nn.Linear` while computing the attention themselves. It is
-because the reference implementation calls that same entry point, so a
-submission that calls it matches the reference exactly and passes every
-correctness check, while scoring about 2.5x on `kb_l1_97` against a hand-written
-baseline the library call beats. The upstream `torch_computation_ops` check that
-would also catch it ships as a warning.
+because standard softmax-attention contracts admit exactly that shortcut. Those contracts
+are now `research_only`; the retained A contracts use cosine attention with learned bias
+or causal ReLU attention, neither of which has a one-call equivalent. The upstream
+`torch_computation_ops` check that would also catch broad framework compute remains a
+warning, while each retained task freezes its narrower kernel boundary explicitly.
 
 Where that check cannot reach, each A-tier contract declares its own
 `kernel_scope`: what must be in a kernel, and what may stay in the library. An
@@ -100,6 +111,10 @@ pattern.
   a finished device run.
 - `collection/`: redacted collection inventories. These contain public task ids
   and role names only; hidden cases and measurement details stay under `private/`.
+- `research/`: CPU-only pre-task contracts and probe plans. The first Attention
+  P0 bundle fixes per-sequence causal, packed varlen and paged-KV semantics, but
+  every hardware matrix cell remains `not_run`; these files are not released
+  tasks, admission evidence or performance results.
 - `tools/`: the public flow. `generate_cases.py` turns a §4.3 case entry into
   inputs and a golden, and `case_specialization.py` is the convention that turns a
   case into a runnable problem. The evaluator imports that convention from here
@@ -113,6 +128,12 @@ pattern.
 - `progress/`: one Markdown hand-off for each completed compliance phase.
 - `CONFORMANCE.md`: the guide, requirement by requirement, with the shortfalls
   this set carries stated rather than left to be found.
+- `IMPLEMENTATION_DECISIONS.md`: the current policy layer for ambiguous or
+  conflicting implementation choices; it does not rewrite the preserved guide.
+- `../docs/musa_operator_evaluation_normative_spec_v1.md`: the sole current executable
+  specification after Phase 21 arbitration.
+- `../docs/musa_operator_evaluation_requirement_traceability_matrix.md`: source clause,
+  normative decision, migration status and hardware dependency for each conflict.
 - `private/`: evaluator-only assets; ignored by Git except for its README.
 
 ## Tools
@@ -127,7 +148,9 @@ python musa_operator_eval/evaluator/probe_sdpa.py
 
 # Deterministically regenerate a task's public inputs and golden outputs from
 # case.seed. The golden comes from the package's own `golden_oracle` where it
-# declares one and from its reference model in float64 on the CPU otherwise.
+# declares one and from its reference model in float64 on the CPU otherwise. In
+# a full run the serialized input/golden pair is also the correctness authority;
+# problem.py is not silently substituted for an independent oracle.
 python musa_operator_eval/tools/generate_cases.py \
   --task-dir musa_operator_eval/tasks/kb_l3_43_b
 
@@ -188,7 +211,7 @@ python musa_operator_eval/evaluator/run_task.py --submission <model_new.py> \
   --cases musa_operator_eval/private/<task-id>/cases.private.json \
   --generalization-seed 20260927  # optional: replay a reported probe
 
-# The same pipeline over a compiled submission (§4.6's torch-free runner)
+# Research-only compiled diagnostic; never produces a formal score or release row
 python musa_operator_eval/evaluator/run_binary.py \
   --task-dir musa_operator_eval/tasks/<task-id> --submission <dir with kernel.mu> \
   --cases musa_operator_eval/private/<task-id>/cases.private.json \
@@ -209,6 +232,9 @@ python musa_operator_eval/evaluator/collect_operator_candidate_pool.py --check
 
 # A single pool can be selected during review
 python musa_operator_eval/evaluator/collect_operator_candidate_pool.py --pool attention --check
+
+# Verify the CPU-only contract for the first three Attention P0 probes
+python -m unittest musa_operator_eval.tests.test_attention_p0_research -v
 ```
 
 `run_task.py` is the entry point for a whole task. It specializes `problem.py`
@@ -227,16 +253,23 @@ report. Passing `--generalization-seed` reproduces a reported probe for debuggin
 framework protocol and writes the shape `candidate_gate.py` reads. It requires
 all four A roles or all six B roles to be supplied; `torch_musa_eager` is the task
 reference and is measured automatically. An implementation that cannot honestly
-be built may still be recorded as `unavailable` with a reason, but the resulting
-record is deliberately `readiness.status=incomplete` and cannot be admitted or
-ranked. `collect_baseline_inventory.py` turns that state into a redacted backlog
-without publishing hidden case identities or measurements.
+be built may still be recorded as `unavailable` with a reason. That row can complete
+`evidence_complete` but never supplies a latency. `scoreable` additionally requires
+every scoring Case to have its frozen, passing, positive denominator (and the B expert
+trace); `release_ready` also requires the task's final publication evidence. The B gate
+requires passing naive/expert rows for every case, and the ranker rejects the whole task
+if any scoring Case lacks a usable runtime or denominator. It never computes a partial
+geomean. `collect_baseline_inventory.py` exposes only aggregate states and
+unavailable/non-passing roles, without publishing hidden case identities, reasons or
+measurements.
 
 A B task is released and scored only when its contract is `measured/admit` and
 declares at least two measured gap-reason categories. The four entry-scoped B
 packages currently retain their earlier measurements but are marked
 `blocked_gap_coverage`; only the family-scoped pilot currently meets the §4.3
-category floor. The manifest builder, admission recorder, release packager, both
+category floor. Those four current contracts are `not_scheduled` for new baseline
+collection; a redesign uses a new task id, while the existing packages remain as
+auditable evidence. The manifest builder, admission recorder, release packager, both
 evaluators, and the ranker all enforce that state.
 
 Every implementation is passed in as a module path rather than named in the
@@ -246,8 +279,8 @@ own projections, while the family-scoped pilot takes `q, k, v` directly. The
 tool's own contribution is to reproduce the harness's three measurement facts
 rather than paraphrase them — weights are aligned by re-seeding and rebuilding as
 `kernelbench.eval` does, inputs and parameters are cast by its
-`_process_input_tensor`, and correctness is judged by its
-`get_tolerance_for_precision`. A baseline measured under a different protocol from
+`_process_input_tensor`, and correctness is judged against the generated golden under
+the selected profile's independent `atol`, `rtol` and `max_abs_error`. A baseline measured under a different protocol from
 the submissions it is the denominator for would admit a task for the wrong reason.
 
 `collect_attention_set.py` reads `sets/attention/attention_set.json`, which is

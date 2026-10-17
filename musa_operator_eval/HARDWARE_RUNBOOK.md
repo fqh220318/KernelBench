@@ -1,5 +1,14 @@
 # MUSA task policy
 
+> **Phase 22 execution boundary (2026-10-05):** do not use this historical runbook to
+> collect a new official baseline yet. `sdpa_forward_b_v0`,
+> `relu_causal_attention_a_v0` and `swin_transformer_v2_a_v0` are
+> `keep / hardware_pending`; eight rejected current contracts are `research_only` and
+> must not be scheduled. Static migration is complete for the keep set.
+> Compiled/direct-library commands below are diagnostic history only. The Python
+> `ModelNew` path is the sole normative scored path. Phase 23-24 contract migration is
+> complete; Phase 25 may start only after the software oracle/golden replay succeeds.
+
 The rules that code does not enforce. How to probe a device, take a measurement
 or drive a case is described by the tool that does it -- repeating any of that
 here would only create a copy that drifts away from the source.
@@ -285,13 +294,14 @@ the wrong thing, which is why they are listed rather than described:
 
 ## Four traps worth knowing before reading a number
 
-**The graded bar is resolved from the contract, not from a manifest.** A task's
-`tolerances.max_abs_error` is a loosen-only override of the framework's per-dtype floor
-(`get_tolerance_for_precision`: 1e-4 at fp32, 1e-2 at fp16/bf16), applied to `atol` and
-`rtol` alike. Both drivers resolve it the same way and every report records the value as
-`tolerance_used`, so a reader never has to guess which bar a row was graded at. A
-per-case `tolerance` field existed once and only the compiled driver read it, which is
-exactly how two graders end up holding one submission to two different numbers.
+**The graded bar is selected by the case and resolved from the contract.** Every case
+names one `task.json:tolerance_profiles` entry. Its declared `atol` and `rtol` are each
+raised, when necessary, to the framework's per-dtype floor
+(`get_tolerance_for_precision`: 1e-4 at fp32, 1e-2 at fp16/bf16); its declared
+`max_abs_error` remains an independent hard ceiling and is never replaced by that
+floor. A result must pass both checks. The Python evaluator, the legacy binary
+diagnostic and the baseline collector use the same rule, and every report records the
+profile plus all three effective values under `tolerance_used`.
 
 **`runtime` is milliseconds, whatever the framework's comment says.**
 `kernelbench.eval`'s `KernelExecResult` documents `runtime` as microseconds, and the
@@ -364,15 +374,22 @@ python musa_operator_eval/evaluator/measure_baseline.py \
   --output musa_operator_eval/private/<task-id>/baseline.hidden.json
 ```
 
-`--unavailable` remains an honest way to record why a role could not be built, but it
-produces `readiness.status=incomplete` and returns nonzero. Missing, duplicated,
-unavailable, failed, errored or unsupported mandatory rows cannot reach admission or
-ranking. Never put a lookalike implementation under a required role name to make the
-inventory green.
+`--unavailable` remains the honest way to record why a role could not be built. A
+reasoned non-passing row completes the observation roster; it does not become a
+latency and cannot be substituted into a ratio. Missing or duplicated role/case rows
+make `evidence_complete=false`. Even with complete evidence, a missing/failed scoring
+denominator makes `scoreable=false`; until final task evidence is accepted,
+`release_ready=false`. Never put a lookalike implementation under a real role name to
+make the inventory green.
 
-`candidate_gate.py` decides from measured latencies: the geometric mean of
-`naive_library_composition / expert_dispatch` over the cases where both passed.
-A task is not published unless the decision is `admit`.
+`candidate_gate.py` is the scoreability boundary. Every case must have passing,
+positive-latency `naive_library_composition` and `expert_dispatch` rows; auxiliary
+roles may carry documented unsupported/unavailable observations. The gate computes
+the geometric mean of `naive_library_composition / expert_dispatch`, and a task is
+not published unless the decision is `admit`. The ranker likewise uses only passing
+rows from the per-Case declared denominator and rejects the entire task when any
+scoring Case has no usable denominator or candidate runtime; it never ranks a partial
+Case subset.
 
 The mean is geometric on purpose. A task that wins one case tenfold and loses two
 at 0.1x is not worth grading, and an arithmetic mean would admit it.
