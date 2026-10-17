@@ -24,6 +24,7 @@ libtorch" 的偏差所在,记在 `starter.abi.runner_imports_libtorch` 里而不
 
 import torch
 import torch.nn as nn
+import torch_musa
 
 class ModelNew(nn.Module):
     """SDPA forward library dispatch:填好下面四个标记区域。"""
