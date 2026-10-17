@@ -874,6 +874,49 @@ def check_library_whitelist(
     return (False, "")
 
 
+def check_formal_library_call_surface(
+    code: str, formal_call_surface: Optional[str] = None
+) -> Tuple[bool, str]:
+    """Keep normative B-tier submissions on the declared framework boundary.
+
+    The binary allowlist describes transitive linkage as well as custom fallback
+    kernels, so it cannot by itself distinguish ``torch_musa`` from a direct
+    backend-library binding.  The normative contract requires the former and
+    leaves the latter to maintainer-side research tools.
+    """
+    if formal_call_surface is None:
+        return (False, "")
+    if formal_call_surface != "torch_musa":
+        return (True, f"Unknown formal library call surface: {formal_call_surface}")
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        # Syntax validation reports this separately; do not duplicate its error.
+        return (False, "")
+
+    imported_roots = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_roots.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported_roots.add(node.module.split(".")[0])
+
+    direct_roots = sorted(root for root in imported_roots if "mudnn" in root.lower())
+    if direct_roots:
+        return (True, "Direct backend-library import bypasses torch_musa: " + ", ".join(direct_roots))
+
+    source = _strip_comments(code)
+    if re.search(r"\btorch\s*\.\s*ops\s*\.\s*mudnn\b", source, flags=re.IGNORECASE):
+        return (True, "Direct torch.ops.mudnn access bypasses torch_musa")
+    for match in re.finditer(CTYPES_LOAD_PATTERN, source):
+        if "mudnn" in match.group(1).lower():
+            return (True, "Direct backend-library loading bypasses torch_musa")
+    if "torch_musa" not in imported_roots:
+        return (True, "Normative B-tier submissions must import torch_musa")
+    return (False, "")
+
+
 def check_version_string_dispatch(code: str) -> Tuple[bool, str]:
     """Check for dispatch decisions keyed on a version string."""
     source = _strip_comments(code)
@@ -1146,6 +1189,7 @@ def validate_library_kernel_static(
     required_trace_fields = policy.get("required_trace_fields", [])
     trace_env_var = policy.get("trace_env_var")
     case_id_env_var = policy.get("case_id_env_var")
+    formal_call_surface = policy.get("formal_call_surface")
 
     # An empty backend skips the backend implementation check in
     # validate_kernel_static; B-tier code is not required to define a kernel.
@@ -1160,6 +1204,7 @@ def validate_library_kernel_static(
 
     for has_issue, message in (
         check_library_whitelist(code, allowed_libraries, allowed_symbol_prefixes),
+        check_formal_library_call_surface(code, formal_call_surface),
         check_out_of_scope_modification(code, frozen_paths),
         check_version_string_dispatch(code),
         check_dispatch_trace_emission(code, required_trace_fields, trace_env_var, case_id_env_var),

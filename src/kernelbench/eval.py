@@ -117,7 +117,7 @@ def get_tolerance_for_precision(precision: str | torch.dtype) -> float:
 
 
 def resolve_tolerance(precision: str | torch.dtype, declared: float | None = None) -> float:
-    """The tolerance a case is actually graded at.
+    """Resolve one legacy scalar tolerance.
 
     `get_tolerance_for_precision` answers what the framework can support at a
     precision; this answers what this particular case is graded against, which is
@@ -138,6 +138,36 @@ def resolve_tolerance(precision: str | torch.dtype, declared: float | None = Non
     if declared is None:
         return framework
     return max(framework, float(declared))
+
+
+def resolve_tolerance_profile(
+    precision: str | torch.dtype,
+    declared: dict | float | None = None,
+) -> dict:
+    """Resolve the three independent correctness limits for one case.
+
+    ``atol`` and ``rtol`` inherit the framework's per-dtype lower bound.  The
+    absolute-error ceiling is independent: it is never substituted for either
+    allclose parameter.  A scalar remains accepted for callers outside the MUSA
+    task format and means the same number for all three limits.
+    """
+    framework = get_tolerance_for_precision(precision)
+    if isinstance(declared, (int, float)):
+        profile = {
+            "atol": float(declared),
+            "rtol": float(declared),
+            "max_abs_error": float(declared),
+        }
+    else:
+        profile = dict(declared or {})
+    return {
+        "atol": max(framework, float(profile.get("atol", framework))),
+        "rtol": max(framework, float(profile.get("rtol", framework))),
+        # Legacy callers had no separate ceiling.  Infinity preserves their
+        # allclose-only semantics without weakening a declared MUSA profile.
+        "max_abs_error": float(profile.get("max_abs_error", float("inf"))),
+        "framework_floor": framework,
+    }
     
 
 class KernelExecResult(BaseModel):
@@ -453,15 +483,22 @@ def eval_kernel_against_ref(
 
     # Optional loosen-only override. See resolve_tolerance for why the direction
     # is enforced rather than merely documented.
-    tolerance: float | None = None,
+    tolerance: dict | float | None = None,
 
     # Guard against potential reward hacking [optional but ongoing enhancement]
     check_for_excessive_speedup: bool = True,
     excessive_speedup_threshold: float = 10, # flag if the kernel is more than <excessive_speedup_threshold>x faster than the reference
     static_check: bool = False, # run the tier-aware source audit before compiling
+    golden_inputs: Optional[list] = None,
+    golden_outputs: Optional[list] = None,
+    golden_output_names: Optional[list[str]] = None,
+    num_perf_warmup: int = 3,
+    num_perf_discard_first: int = 1,
 ) -> KernelExecResult:
     """
-    Evaluate the custom kernel against the original model
+    Evaluate the custom kernel against a generated golden when supplied, otherwise
+    against the original model. The original model remains the diagnostic timing
+    reference in both modes.
 
     NOTE: we are thinking about refactor this to be more modularized 
     and we can add more checks as our other ongiong PRs are working on
@@ -577,6 +614,26 @@ def eval_kernel_against_ref(
                 compiled=False, correctness=False, metadata=metadata
             )  # skip compilation and everything after it
 
+    correctness_expected = None
+    if golden_inputs is not None or golden_outputs is not None:
+        if golden_inputs is None or golden_outputs is None:
+            raise ValueError("golden_inputs and golden_outputs must be supplied together")
+        fixed_inputs = [torch.as_tensor(value).clone() for value in golden_inputs]
+        correctness_expected = [torch.as_tensor(value).clone() for value in golden_outputs]
+        if not correctness_expected:
+            raise ValueError("golden_outputs must contain at least one tensor")
+
+        # A scored case is the serialized input/golden pair, not another random
+        # draw from problem.py. Re-use the same tensors for correctness, timing
+        # and the stability rerun; callers regenerate another case explicitly.
+        def get_inputs():
+            return [value.clone() for value in fixed_inputs]
+
+        metadata["correctness_reference"] = "independent_golden"
+        metadata["golden_output_names"] = list(golden_output_names or [])
+    else:
+        metadata["correctness_reference"] = "problem_model"
+
     set_seed(seed_num)  # set seed for reproducible input
     init_inputs = get_init_inputs()
     
@@ -685,6 +742,7 @@ def eval_kernel_against_ref(
             backend=backend,
             precision=precision,
             tolerance=tolerance,
+            expected_outputs=correctness_expected,
         )
     except Exception as e:
         # TODO: add metadata for runtime error e.g. error in launching kernel, illegal memory access, ...
@@ -715,7 +773,9 @@ def eval_kernel_against_ref(
                 elapsed_times = timing_fn(
                     model_new,
                     inputs,
+                    num_warmup=num_perf_warmup,
                     num_trials=num_perf_trials,
+                    discard_first=num_perf_discard_first,
                     verbose=verbose,
                     device=device,
                 )
@@ -766,7 +826,9 @@ def eval_kernel_against_ref(
         reference_elapsed_times = timing_fn(
             original_model,
             inputs, # ideally cloned for extra safety but handled already in correctness check
+            num_warmup=num_perf_warmup,
             num_trials=num_perf_trials,
+            discard_first=num_perf_discard_first,
             verbose=verbose,
             device=device,
         )
@@ -905,27 +967,28 @@ def run_and_check_correctness(
     device: Optional[torch.device] =None,
     backend: str ="cuda",
     precision: torch.dtype =torch.float32,
-    tolerance: float | None = None,
+    tolerance: dict | float | None = None,
+    expected_outputs: Optional[list] = None,
 ) -> KernelExecResult:
     """
-    run the model and check correctness,
+    run the model and check correctness against either the model output or the
+    caller-supplied expected outputs,
     assume model already loaded and compiled (loaded and compiled in the caller)
     this is all on GPU, requiring cuda device and transfer .cuda()
 
     num_correct_trials: run the evalutation multiple times with (ideally) different random inputs to ensure correctness
     backend: backend type for handling dtype conversions
     precision: torch.dtype
-    tolerance: the task contract's `max_abs_error`, or None to use the
-        framework's per-dtype value. Resolved once through `resolve_tolerance`,
-        which only ever loosens, so the whole trial loop is held to one number.
+    tolerance: the case's declared ``atol``, ``rtol`` and
+        ``max_abs_error``. The first two are resolved against the framework's
+        per-dtype floor; the third remains an independent hard ceiling.
     """
     pass_count = 0
     gpu = kb_gpu.get_gpu_module()
 
-    # Resolved once, before the loop. This read its own name before it was ever
-    # assigned, so the correctness check raised UnboundLocalError on every run and
-    # the contract's `tolerances` block was never consulted on this path at all.
-    resolved_tolerance = resolve_tolerance(precision, tolerance)
+    # Resolve once so every trial is held to the same effective three-part limit.
+    resolved_tolerance = resolve_tolerance_profile(precision, tolerance)
+    metadata["tolerance_used"] = dict(resolved_tolerance)
 
     # Generate num_correct_trials seeds deterministically from the initial seed
     torch.manual_seed(seed)
@@ -954,37 +1017,79 @@ def run_and_check_correctness(
      
             model_new = new_model_instance.to(device=device, dtype=precision)
 
-            output = model(*inputs)
-            gpu.synchronize(device=device)
+            if expected_outputs is None:
+                output = model(*inputs)
+                gpu.synchronize(device=device)
+                reference_outputs = list(output) if isinstance(output, (tuple, list)) else [output]
+            else:
+                reference_outputs = [
+                    _process_input_tensor(value, device, backend, precision)
+                    for value in expected_outputs
+                ]
             # ensure all GPU operations are completed before checking results
 
             try:
                 output_new = model_new(*inputs)
                 gpu.synchronize(device=device)
-                if output.shape != output_new.shape:
+                candidate_outputs = (
+                    list(output_new) if isinstance(output_new, (tuple, list)) else [output_new]
+                )
+                if len(reference_outputs) != len(candidate_outputs):
                     metadata = register_and_format_exception(
                         "correctness_issue",
-                        f"Output shape mismatch: Expected {output.shape}, got {output_new.shape}",
+                        f"Output count mismatch: Expected {len(reference_outputs)}, got {len(candidate_outputs)}",
                         metadata,
                     )
                     metadata["correctness_issue_name"] = "correctness_issue"
                     if verbose:
                         print(
-                            f"[FAIL] trial {trial}: Output shape mismatch: Expected {output.shape}, got {output_new.shape}"
+                            f"[FAIL] trial {trial}: Output count mismatch: Expected {len(reference_outputs)}, got {len(candidate_outputs)}"
                         )
                     return KernelExecResult(
                         compiled=True, correctness=False, metadata=metadata
                     )
 
-                # in torchbench, they use both precisions for atol and rtol
-                # kernelbench v0 and v0.1 uses fp32, atol = rtol = 1e-02
-                # now we will return the tolerance from get_tolerance_for_precision
-                # check output value difference
-                if not torch.allclose(
-                    output, output_new, atol=resolved_tolerance, rtol=resolved_tolerance
-                ):  # fail
-                    max_diff = torch.max(torch.abs(output - output_new)).item()
-                    avg_diff = torch.mean(torch.abs(output - output_new)).item()
+                shape_mismatches = [
+                    (index, expected.shape, actual.shape)
+                    for index, (expected, actual) in enumerate(zip(reference_outputs, candidate_outputs))
+                    if expected.shape != actual.shape
+                ]
+                if shape_mismatches:
+                    index, expected_shape, actual_shape = shape_mismatches[0]
+                    metadata = register_and_format_exception(
+                        "correctness_issue",
+                        f"Output {index} shape mismatch: Expected {expected_shape}, got {actual_shape}",
+                        metadata,
+                    )
+                    metadata["correctness_issue_name"] = "correctness_issue"
+                    if verbose:
+                        print(
+                            f"[FAIL] trial {trial}: Output {index} shape mismatch: Expected {expected_shape}, got {actual_shape}"
+                        )
+                    return KernelExecResult(
+                        compiled=True, correctness=False, metadata=metadata
+                    )
+
+                differences = [
+                    torch.abs(expected.float() - actual.float())
+                    for expected, actual in zip(reference_outputs, candidate_outputs)
+                ]
+                max_diff = max(
+                    (torch.max(difference).item() if difference.numel() else 0.0)
+                    for difference in differences
+                )
+                comparisons = [
+                    torch.allclose(
+                        expected,
+                        actual,
+                        atol=resolved_tolerance["atol"],
+                        rtol=resolved_tolerance["rtol"],
+                    )
+                    for expected, actual in zip(reference_outputs, candidate_outputs)
+                ]
+                comparisons.append(max_diff <= resolved_tolerance["max_abs_error"])
+                if not all(comparisons):  # fail
+                    avg_diff = max(torch.mean(difference).item() for difference in differences)
                     metadata.setdefault("max_difference", []).append(f"{max_diff:.6f}")
                     metadata.setdefault("avg_difference", []).append(f"{avg_diff:.6f}")
                     metadata["correctness_issue"] = "Output mismatch"

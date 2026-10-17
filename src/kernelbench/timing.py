@@ -623,7 +623,11 @@ def get_timing_stats(elapsed_times: list[float], device: torch.device = None) ->
         "std": float(f"{np.std(elapsed_times):.3g}"),
         "min": float(f"{np.min(elapsed_times):.3g}"),
         "max": float(f"{np.max(elapsed_times):.3g}"),
+        "p10": float(f"{np.percentile(elapsed_times, 10):.3g}"),
+        "p50": float(f"{np.percentile(elapsed_times, 50):.3g}"),
+        "p90": float(f"{np.percentile(elapsed_times, 90):.3g}"),
         "num_trials": len(elapsed_times),
+        "samples": [float(value) for value in elapsed_times],
     }
 
     if device:
