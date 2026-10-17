@@ -15,5 +15,11 @@ the goldens are regenerated on the target machine with `tools/generate_cases.py`
 The public, redacted backlog is `../collection/baseline_collection_plan.json`.
 Regenerate it after mounting this tree with
 `python musa_operator_eval/evaluator/collect_baseline_inventory.py`; it exposes
-only aggregate readiness and public role names, never hidden case ids, shapes,
+only aggregate `evidence_complete`/`scoreable`/`release_ready` states and public role names, never hidden case ids, shapes,
 seeds, measurements or private failure reasons.
+
+`provenance_registry.json` is the private reverse map for the opaque `source_id`
+stored in a normative public task.  It records the original project, revision,
+licence and snapshot location, plus the task-to-source binding.  This file must
+remain in the separately versioned private repository; neither the release
+packager nor an agent-visible task package may copy it.
