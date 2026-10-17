@@ -3,7 +3,7 @@ SDPA forward library dispatch (B_library tier).
 
 The reference Model below is deliberately plain PyTorch: for the B tier the
 reference is not the thing under test, the dispatch is. A submission replaces it
-with a ModelNew that probes muDNN / torch_musa at runtime, prefers the fused
+with a ModelNew that probes library capability through torch_musa at runtime, prefers the fused
 path, falls back to a library composition, and finally to a custom `.mu` kernel,
 while emitting one dispatch trace record per case.
 
@@ -138,6 +138,7 @@ TIER = "B_library"
 LIBRARY_POLICY = {
     "allowed_libraries": ["libmusa", "libmudnn"],
     "allowed_symbol_prefixes": ["musa", "mudnn"],
+    "formal_call_surface": "torch_musa",
     "required_trace_fields": ["case_id", "selected_path", "probe_status"],
     "trace_env_var": "KB_DISPATCH_TRACE",
     # The trace has to name the case, and the evaluator compares that against the

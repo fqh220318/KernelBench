@@ -11,7 +11,8 @@
 - `ModelNew.__init__` 接收与 reference `Model` 相同的初始化参数（`scale`、`causal`、`window_left`、`window_right`）。
 - `ModelNew.forward` 接收与 reference 相同的输入，返回**单个 `output` 张量**。不要返回元组：评测端直接在返回值上取 `.shape` 做比较，返回元组会在比较之前抛 `AttributeError`，导致每个 Case 的每次 trial 全部失败。
 - 分派逻辑写在 `forward` 内或它调用的方法内；没有任何需要修改的冻结文件。
-- 兜底 kernel 可用 `kernelbench.musa_extension.load_inline` JIT 编译 `.mu` 源码。
+- 正式融合与库组合路径必须通过 `torch_musa`；不得直接绑定底层后端库。
+- 兜底 kernel 可用评测环境提供的中性 `musa_extension.load_inline` 接口 JIT 编译 `.mu` 源码。
 - 每个 Case 写出一条分派轨迹。
 
 reference 实现在 `problem.py` 的 `Model` 类里，用普通 PyTorch 算子写成。`TIER` 与 `LIBRARY_POLICY` 也定义在同一个文件里，评测端直接用 `LIBRARY_POLICY` 驱动 `validate_library_kernel_static`。

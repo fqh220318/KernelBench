@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "task_id": "sdpa_forward_b_v0",
   "tier": "B_library",
   "visibility": "public",
@@ -31,7 +31,8 @@
       },
       "distribution": "normal",
       "expected_path": "fused_library",
-      "golden": "smoke_001/golden/tensors.json"
+      "golden": "smoke_001/golden/tensors.json",
+      "tolerance_profile": "default"
     },
     {
       "case_id": "smoke_002",
@@ -54,7 +55,8 @@
       },
       "distribution": "uniform",
       "expected_path": "fused_library",
-      "golden": "smoke_002/golden/tensors.json"
+      "golden": "smoke_002/golden/tensors.json",
+      "tolerance_profile": "default"
     },
     {
       "case_id": "smoke_003",
@@ -77,7 +79,8 @@
       },
       "distribution": "normal",
       "expected_path": "fused_library",
-      "golden": "smoke_003/golden/tensors.json"
+      "golden": "smoke_003/golden/tensors.json",
+      "tolerance_profile": "default"
     },
     {
       "case_id": "smoke_004",
@@ -100,7 +103,8 @@
       },
       "distribution": "normal",
       "expected_path": "fused_library",
-      "golden": "smoke_004/golden/tensors.json"
+      "golden": "smoke_004/golden/tensors.json",
+      "tolerance_profile": "default"
     },
     {
       "case_id": "smoke_005",
@@ -123,7 +127,8 @@
       },
       "distribution": "adversarial_extremes",
       "expected_path": "fused_library",
-      "golden": "smoke_005/golden/tensors.json"
+      "golden": "smoke_005/golden/tensors.json",
+      "tolerance_profile": "default"
     }
   ]
 }
