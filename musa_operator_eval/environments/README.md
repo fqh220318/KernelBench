@@ -31,6 +31,15 @@ known to be equivalent.
 |---|---|---|---|---|---|---|---|
 | `musa-5f9d7b9dd1233a68` | MTT S4000 | `mp_22` | fp16 / bf16 | 3.1.0 | 2.7.0 | 1.6.0 | 20241025 kuae1.3.0_musa3.1.0 |
 
+## Local CPU replay environment
+
+`phase25_cpu_replay.environment.yml` is a no-hardware compatibility environment for
+the first half of Phase 25. It matches the target's Python 3.10 line, NumPy,
+packaging, PyTorch 2.2 line and torchada version closely enough to run software
+oracle/golden replay, but it is **not** an evaluation snapshot and cannot be used
+for MUSA correctness, dispatch or timing evidence. Those claims still require the
+target snapshot above and its private full record.
+
 Which tasks were measured here:
 
 | task | tier | record |

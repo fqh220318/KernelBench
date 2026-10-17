@@ -1,0 +1,34 @@
+name: musa-phase25-cpu
+
+# Local, no-hardware compatibility environment for the first half of Phase 25.
+# This is not a replacement for the MUSA target snapshot.  In particular, it
+# intentionally contains neither torch_musa nor the MUSA driver/toolkit stack.
+channels:
+  - pytorch
+  - defaults
+
+dependencies:
+  - python=3.10
+  - numpy=1.26.4
+  - packaging=24.2
+  - pytorch=2.2.0
+  - cpuonly=2.0
+  - pip
+  - pip:
+      # Version recorded by the public target snapshot.  It is needed because
+      # importing kernelbench.eval imports the platform adapter.
+      - torchada==0.1.74
+
+      # Minimal kernelbench.eval import chain used by state materialization and
+      # software replay.  The repository itself is deliberately not installed:
+      # its current package metadata requires torch>=2.9, while this replay must
+      # stay on the target-compatible PyTorch 2.2 line.  The evaluator tools add
+      # the repository's src/ directory to sys.path themselves.
+      - python-dotenv==1.2.4
+      - tqdm==4.70.1
+      - httpx==0.28.1
+      - openai==2.54.0
+      - litellm==1.104.2
+      - requests==2.34.2
+      - pydantic==2.13.5
+      - ninja==1.13.2
