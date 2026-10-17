@@ -68,6 +68,7 @@ def baseline(cases=("hidden_gap_001", "hidden_gap_002", "hidden_gap_003"), ratio
         "task_id": "example_b_v0",
         "tier": "B_library",
         "environment_snapshot": SNAPSHOT,
+        "task_release_status": "hardware_pending",
         "implementations": [
             "upstream_musa", "mudnn_fused", "torch_musa_sdpa", "torch_musa_eager",
             recorder.NAIVE_ROLE, recorder.EXPERT_ROLE,
@@ -78,6 +79,13 @@ def baseline(cases=("hidden_gap_001", "hidden_gap_002", "hidden_gap_003"), ratio
             "reference_implementation": recorder.NAIVE_ROLE,
             "correctness_gate": "all_hidden_cases",
             "minimum_naive_to_expert_ratio": 1.3,
+            "denominator_by_case": {
+                case_id: {
+                    "implementation": recorder.EXPERT_ROLE,
+                    "reason": "B-tier expert denominator frozen before admission",
+                }
+                for case_id in cases
+            },
         },
     }
     document.update(overrides)

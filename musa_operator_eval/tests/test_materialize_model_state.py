@@ -407,7 +407,12 @@ class DeviceConstructionTests(unittest.TestCase):
     def case_and_task(self, task_dir: Path, package_id: str, case_id: str):
         from tools.case_specialization import load_task
 
-        manifest = json.loads((ROOT / "private" / package_id / "cases.private.json").read_text(encoding="utf-8"))
+        manifest_path = ROOT / "private" / package_id / "cases.private.json"
+        if not manifest_path.is_file():
+            raise unittest.SkipTest(
+                f"private case manifest is not mounted: {manifest_path}"
+            )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         case = [entry for entry in manifest["cases"] if entry["case_id"] == case_id][0]
         task, _cases, problem_source = load_task(task_dir)
         return case, task, problem_source
@@ -482,7 +487,28 @@ class DeviceConstructionTests(unittest.TestCase):
             if not task_path.is_file():
                 continue
             task = json.loads(task_path.read_text(encoding="utf-8"))
-            declared = bool((task.get("starter") or {}).get("cpp", {}).get("model_state"))
+            if task.get("normative_spec") == "1.0.0":
+                oracle = task.get("golden_oracle") or {}
+                state_handling = oracle.get("state_handling")
+                context = set(oracle.get("context") or [])
+                if state_handling == "explicit_model_state":
+                    self.assertIn("model_state", context, task["id"])
+                    declared = True
+                elif state_handling == "deterministic_constructor_replay":
+                    self.assertTrue(
+                        {"case_seed", "init_inputs"}.issubset(context),
+                        task["id"],
+                    )
+                    self.assertNotIn("model_state", context, task["id"])
+                    declared = True
+                else:
+                    self.assertEqual(state_handling, "stateless", task["id"])
+                    self.assertNotIn("model_state", context, task["id"])
+                    declared = False
+            else:
+                declared = bool(
+                    (task.get("starter") or {}).get("cpp", {}).get("model_state")
+                )
             # Any seed will do here: the question is whether the reference has state at all.
             state = self.framework_state_defaults(directory, torch.float32)
             with self.subTest(task=task["id"]):
@@ -519,13 +545,25 @@ class DeclarationTests(unittest.TestCase):
                 continue
             task = json.loads(task_path.read_text(encoding="utf-8"))
             cpp = (task.get("starter") or {}).get("cpp") or {}
+            if not cpp:
+                self.assertEqual(task.get("normative_spec"), "1.0.0")
+                continue
             self.assertIn("model_state", cpp, f"{task['id']} does not say whether the compiled path gets state")
             if cpp["model_state"]:
                 declared.append(task["id"])
                 tool = ROOT / cpp["model_state"]["materialized_by"]
                 self.assertTrue(tool.is_file(), f"{task['id']} names {tool}, which is not there")
                 self.assertEqual(cpp["model_state"]["tensor_prefix"], "state_")
-        self.assertEqual(len(declared), 8, f"the weight-bearing packages are eight, and this found {declared}")
+        # Six legacy compiled packages transport state through tensor files.
+        # The normative ReLU and windowed-classifier packages are also
+        # weight-bearing, but their formal Python paths reconstruct reference
+        # and submission state from the same case seed and therefore have no
+        # compiled `model_state` declaration.
+        self.assertEqual(
+            len(declared),
+            6,
+            f"the compiled state-bearing packages are six, and this found {declared}",
+        )
 
 
 if __name__ == "__main__":

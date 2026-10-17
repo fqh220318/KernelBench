@@ -1,11 +1,10 @@
 """
-Cross-check the task's PyTorch reference against the independent NumPy one.
+Cross-check public execution models against their independent NumPy oracles.
 
-`problem.py:Model` is what a submission is graded against, so it has to agree
-with `reference/sdpa_reference.py`, which is the blocked float64 implementation
-the golden tensors are generated from. The two are deliberately different code
-paths: torch on float32 with a max-shift softmax, NumPy on float64 in query
-blocks.
+Generated goldens are the correctness authority. The public torch models still
+have to agree with those goldens because they define construction, diagnostic
+timing and the interface a submission implements. The code paths are deliberately
+different: torch on the declared device dtype and NumPy float64 on CPU.
 
 The PyTorch reference accumulates in float32 (that is the contract), so the
 float64 reference is only an oracle down to float32 rounding — hence the
@@ -18,6 +17,7 @@ Run with:
     python musa_operator_eval/tests/test_problem_reference.py -v
 """
 
+import ast
 import importlib.util
 import json
 import sys
@@ -38,14 +38,28 @@ def _load_module(name: str, path: Path):
 
 
 REFERENCE = _load_module("sdpa_reference", TASK_DIR / "reference" / "sdpa_reference.py")
+RELU_TASK_DIR = Path(__file__).resolve().parents[1] / "tasks" / "kb_l3_50_a"
+RELU_REFERENCE = _load_module(
+    "relu_causal_reference",
+    RELU_TASK_DIR / "reference" / "relu_causal_reference.py",
+)
+SWIN_TASK_DIR = Path(__file__).resolve().parents[1] / "tasks" / "kb_l3_30_a"
+SWIN_REFERENCE = _load_module(
+    "swin_v2_reference",
+    SWIN_TASK_DIR / "reference" / "swin_v2_reference.py",
+)
 
 try:
     import torch
 
     PROBLEM = _load_module("sdpa_problem", TASK_DIR / "problem.py")
+    RELU_PROBLEM = _load_module("relu_causal_problem", RELU_TASK_DIR / "problem.py")
+    SWIN_PROBLEM = _load_module("swin_v2_problem", SWIN_TASK_DIR / "problem.py")
 except ImportError:  # torch is not installed
     torch = None
     PROBLEM = None
+    RELU_PROBLEM = None
+    SWIN_PROBLEM = None
 
 
 # Configurations that exercise each clause of the semantic contract. The shape
@@ -147,12 +161,7 @@ class ProblemReferenceTests(unittest.TestCase):
         self.assertEqual(output.dtype, torch.bfloat16)
 
     def test_reference_returns_a_bare_tensor(self):
-        """The harness compares `output.shape`, so a tuple reference cannot be graded.
-
-        This is not a style preference: run_and_check_correctness reads `.shape`
-        off the reference's return value, and a tuple raises AttributeError before
-        any comparison happens, failing every trial of every case.
-        """
+        """This task's public ABI declares one output, so its model returns one tensor."""
         model = PROBLEM.Model(0.125, False, -1, -1)
         q = torch.randn(1, 2, 4, 32)
         k = torch.randn(1, 2, 4, 32)
@@ -206,6 +215,98 @@ class ProblemReferenceTests(unittest.TestCase):
             torch.allclose(output, output_from_tiled_kv, atol=1e-6),
             "tiling K/V instead of repeating them should change the result",
         )
+
+
+class ReLUCausalOracleTests(unittest.TestCase):
+    def test_oracle_does_not_reconstruct_state_through_torch(self):
+        source = (RELU_TASK_DIR / "reference" / "relu_causal_reference.py").read_text(
+            encoding="utf-8"
+        )
+        tree = ast.parse(source)
+        imported_roots = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported_roots.update(alias.name.split(".", 1)[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported_roots.add(node.module.split(".", 1)[0])
+        self.assertNotIn("torch", imported_roots)
+
+    def test_numpy_operator_applies_causal_mask_before_relu(self):
+        x = np.asarray([[[1.0, -1.0], [-1.0, 1.0]]], dtype=np.float32)
+        identity = np.eye(2, dtype=np.float64)
+        weight = np.concatenate([identity, identity, identity], axis=0)
+        bias = np.zeros(6, dtype=np.float64)
+        state = {
+            "causal_mask": np.tril(np.ones((2, 2), dtype=bool))[None, None],
+            "c_attn.weight": weight,
+            "c_attn.bias": bias,
+        }
+        output = RELU_REFERENCE.relu_causal_attention(
+            x,
+            init_inputs=[2, 1, 2],
+            model_state=state,
+        )
+
+        scale = np.sqrt(2.0)
+        expected = np.asarray(
+            [[[scale, -scale], [-scale, scale]]],
+            dtype=np.float64,
+        )
+        np.testing.assert_allclose(output, expected, atol=1e-12, rtol=0.0)
+
+    @unittest.skipUnless(torch is not None, "requires torch")
+    def test_public_model_and_independent_oracle_agree(self):
+        seed = 19
+        torch.manual_seed(seed)
+        x = torch.rand(1, 4, 8)
+        torch.manual_seed(seed)
+        model = RELU_PROBLEM.Model(8, 2, 4)
+        actual = model(x).detach().numpy()
+        expected = RELU_REFERENCE.relu_causal_attention(
+            x.numpy(),
+            init_inputs=[8, 2, 4],
+            model_state={
+                name: value.detach().numpy()
+                for name, value in model.state_dict().items()
+            },
+        )
+        np.testing.assert_allclose(actual, expected, atol=1e-5, rtol=1e-5)
+
+
+class SwinOracleTests(unittest.TestCase):
+    def test_window_partition_round_trip(self):
+        values = np.arange(2 * 4 * 6 * 3, dtype=np.float64).reshape(2, 4, 6, 3)
+        windows = SWIN_REFERENCE._partition(values, 2)
+        restored = SWIN_REFERENCE._reverse(windows, 2, 4, 6)
+        np.testing.assert_array_equal(restored, values)
+
+    def test_patch_convolution_has_the_declared_stride(self):
+        values = np.arange(16, dtype=np.float64).reshape(1, 1, 4, 4)
+        weight = np.ones((1, 1, 2, 2), dtype=np.float64)
+        result = SWIN_REFERENCE._patch_convolution(values, weight, np.zeros(1))
+        expected = np.asarray([[[[10.0, 18.0], [42.0, 50.0]]]])
+        np.testing.assert_array_equal(result, expected)
+
+    def test_layer_norm_uses_population_variance(self):
+        values = np.asarray([[[1.0, 2.0, 3.0]]])
+        actual = SWIN_REFERENCE._layer_norm(values, np.ones(3), np.zeros(3), epsilon=0.0)
+        expected = (values - 2.0) / np.sqrt(2.0 / 3.0)
+        np.testing.assert_allclose(actual, expected, atol=1e-12, rtol=0.0)
+
+    @unittest.skipUnless(torch is not None, "requires torch")
+    def test_window_attention_matches_the_public_torch_model(self):
+        torch.manual_seed(23)
+        model = SWIN_PROBLEM.WindowAttention(4, (2, 2), 2).eval()
+        values = torch.randn(2, 4, 4)
+        actual = model(values).detach().numpy()
+        state = {
+            f"attn.{name}": value.detach().numpy()
+            for name, value in model.state_dict().items()
+        }
+        expected = SWIN_REFERENCE._attention(
+            values.numpy(), state, "attn", heads=2, mask=None
+        )
+        np.testing.assert_allclose(actual, expected, atol=2e-5, rtol=2e-5)
 
 
 if __name__ == "__main__":

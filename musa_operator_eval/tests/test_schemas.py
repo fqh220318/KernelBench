@@ -28,6 +28,7 @@ _spec = importlib.util.spec_from_file_location("validate_schemas", ROOT / "evalu
 assert _spec is not None and _spec.loader is not None
 validator = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(validator)
+import baseline_readiness as readiness
 
 CANONICAL_GAP_REASONS = (
     "unsupported_shape",
@@ -61,12 +62,32 @@ def task_document(tier, **overrides):
         "problem_file": "problem.py",
         "reference": "problem.py:Model",
         "case_parameters": {"shape.B": "batch_size"},
-        "tolerances": {"atol": 0.01, "rtol": 0.01, "max_abs_error": 0.05},
+        "tolerance_profiles": {
+            "default": {
+                "float16": {"atol": 0.01, "rtol": 0.01, "max_abs_error": 0.05}
+            }
+        },
+        "performance_protocol": {
+            "timer": "device_event", "warmup": 3, "measurements": 100,
+            "discard_first": 1, "cache": "l2_flush_each_trial", "statistic": "mean",
+            "diagnostics": ["samples", "p10", "p50", "p90", "std", "min", "max"],
+        },
         "tensor_contract": {"input_dtypes": ["float16"], "accumulation_dtype": "float32"},
         "prohibited": ["ATen"],
         "submission": {"entrypoint": "ModelNew"},
         "attempt_budget": {"max_attempts": 20, "wall_time_seconds": 7200},
         "outputs": {"required": ["output"]},
+        "scoring": {
+            "speedup": "denominator / submission",
+            "ranking": "tier-specific geometric mean",
+            "denominator_policy": {
+                "primary": "upstream_musa" if tier == "A_kernel" else "expert_dispatch",
+                "fallback": "mudnn_fused" if tier == "A_kernel" else "not_allowed",
+                "fallback_condition": "only after exact equivalence is established",
+                "selection_scope": "per_scoring_case",
+                "selection_record": "private_baseline.denominator_by_case",
+            },
+        },
         "starter": {
             "editable": [{"path": "starter/model_new.py", "submit_as": "model_new.py", "regions": ["device_kernel"]}],
             "frozen": ["problem.py", "task.json"],
@@ -128,6 +149,9 @@ def case(case_id="smoke_001", tag="smoke", **overrides):
         "seed": 1101,
         "dtype": "float16",
         "shape": {"B": 1, "H": 4, "S": 64, "D": 64},
+        "attributes": {},
+        "distribution": "uniform",
+        "tolerance_profile": "default",
     }
     document.update(overrides)
     return document
@@ -168,6 +192,9 @@ def gap(case_id, reason="unsupported_shape"):
         "seed": 91001,
         "dtype": "float16",
         "shape": {"B": 1, "H": 8, "S": 128, "D": 192},
+        "attributes": {},
+        "distribution": "uniform",
+        "tolerance_profile": "default",
         "golden": f"golden/{case_id}/tensors.json",
         "expected_path": "library_composition",
         "library_gap": {
@@ -318,7 +345,33 @@ class TierRuleTests(unittest.TestCase):
                 "basis": "the scale is fixed and there is no window, so no other category is reachable",
             },
         }
+        document["lifecycle"] = {
+            "decision": "research_only",
+            "reason": "the current contract cannot satisfy the two-category admission floor",
+            "successor_policy": "new_task_id_required",
+        }
         self.assertEqual(validator.validate_instance_stdlib(document, "task_contract"), [])
+
+    def test_a_gap_blocked_contract_cannot_claim_keep(self):
+        document = task_document("B_library")
+        document["library_policy"]["required_gap_reasons"] = ["unsupported_shape"]
+        document["admission"] = {
+            "status": "blocked_gap_coverage",
+            "decision": "reject",
+            "reason": "the current contract has only one measured category",
+            "gap_reason_coverage": {
+                "state": "blocked",
+                "reachable": ["unsupported_shape"],
+                "unreachable": ["semantic_mismatch"],
+                "basis": "the fixed semantic domain cannot expose a second category",
+            },
+        }
+        document["lifecycle"] = {
+            "decision": "keep",
+            "reason": "this deliberately invalid fixture attempts to retain a rejected contract",
+        }
+        errors = validator.validate_instance_stdlib(document, "task_contract")
+        self.assertTrue(any("research_only" in error or "redesign_new_id" in error for error in errors), errors)
 
     def test_one_gap_category_cannot_be_admitted(self):
         document = task_document("B_library")
@@ -329,8 +382,108 @@ class TierRuleTests(unittest.TestCase):
                             for error in errors), errors)
 
 
+class NormativePublicationRuleTests(unittest.TestCase):
+    """Phase 21 releases use opaque provenance and the Python-only formal path."""
+
+    @staticmethod
+    def document(tier="B_library"):
+        document = task_document(tier)
+        document.pop("source")
+        document["source_id"] = "src_0123456789abcdef"
+        document["normative_spec"] = "1.0.0"
+        document["publication"] = {
+            "release_status": "release_ready",
+            "reference_origin": "independent_cpu_reference",
+        }
+        document["golden_oracle"] = {
+            "path": "reference/independent_reference.py",
+            "entrypoint": "evaluate",
+            "returns": ["output"],
+            "state_handling": "stateless",
+        }
+        document["lifecycle"] = {
+            "decision": "keep",
+            "reason": "the normative fixture is admitted and retained for formal evaluation",
+            "successor_policy": "not_applicable",
+        }
+        document["library_policy"]["formal_call_surface"] = "torch_musa"
+        document["submission"]["language"] = "python"
+        document["starter"]["abi"].pop("deviation", None)
+        document["starter"].pop("cpp", None)
+        document["starter"].pop("link_whitelist", None)
+        return document
+
+    def test_a_normative_python_contract_passes(self):
+        self.assertEqual(
+            validator.validate_instance_stdlib(self.document(), "task_contract"), []
+        )
+
+    def test_hardware_pending_uses_the_same_static_publication_boundary(self):
+        document = self.document()
+        document["publication"]["release_status"] = "hardware_pending"
+        self.assertEqual(
+            validator.validate_instance_stdlib(document, "task_contract"), []
+        )
+
+    def test_hardware_pending_cannot_restore_a_compiled_starter(self):
+        document = self.document()
+        document["publication"]["release_status"] = "hardware_pending"
+        document["starter"]["cpp"] = task_document("B_library")["starter"]["cpp"]
+        errors = validator.validate_instance_stdlib(document, "task_contract")
+        self.assertTrue(any("must not match" in error for error in errors), errors)
+
+    def test_a_normative_contract_must_declare_its_golden_oracle(self):
+        document = self.document()
+        document.pop("golden_oracle")
+        errors = validator.validate_instance_stdlib(document, "task_contract")
+        self.assertTrue(any("golden_oracle" in error for error in errors), errors)
+
+    def test_a_golden_oracle_must_declare_its_state_handling(self):
+        document = self.document()
+        document["golden_oracle"].pop("state_handling")
+        errors = validator.validate_instance_stdlib(document, "task_contract")
+        self.assertTrue(any("state_handling" in error for error in errors), errors)
+
+    def test_explicit_model_state_must_be_in_the_oracle_context(self):
+        document = self.document()
+        document["golden_oracle"]["state_handling"] = "explicit_model_state"
+        errors = validator.validate_instance(document, "task_contract", engine="stdlib")
+        self.assertTrue(any("requires model_state" in error for error in errors), errors)
+
+    def test_deterministic_replay_requires_constructor_context(self):
+        document = self.document()
+        document["golden_oracle"]["state_handling"] = "deterministic_constructor_replay"
+        document["golden_oracle"]["context"] = ["case_seed"]
+        errors = validator.validate_instance(document, "task_contract", engine="stdlib")
+        self.assertTrue(any("requires init_inputs" in error for error in errors), errors)
+
+    def test_stateless_oracle_may_not_receive_model_state(self):
+        document = self.document()
+        document["golden_oracle"]["context"] = ["model_state"]
+        errors = validator.validate_instance(document, "task_contract", engine="stdlib")
+        self.assertTrue(any("stateless must not receive model_state" in error for error in errors), errors)
+
+    def test_a_release_may_not_carry_legacy_provenance(self):
+        document = self.document()
+        document["source"] = task_document("B_library")["source"]
+        errors = validator.validate_instance_stdlib(document, "task_contract")
+        self.assertTrue(any("must not match" in error or "exactly one" in error for error in errors), errors)
+
+    def test_a_release_may_not_carry_a_compiled_starter(self):
+        document = self.document()
+        document["starter"]["cpp"] = task_document("B_library")["starter"]["cpp"]
+        errors = validator.validate_instance_stdlib(document, "task_contract")
+        self.assertTrue(any("must not match" in error for error in errors), errors)
+
+    def test_a_release_requires_an_independent_reference(self):
+        document = self.document()
+        document["publication"]["reference_origin"] = "legacy_upstream_copy"
+        errors = validator.validate_instance_stdlib(document, "task_contract")
+        self.assertTrue(any("independent_cpu_reference" in error for error in errors), errors)
+
+
 class ToleranceAuthorityTests(unittest.TestCase):
-    """A task's `tolerances` block may loosen grading and may not tighten it.
+    """Named profiles preserve three limits and may not tighten atol/rtol.
 
     The field was declared by every package and read by nothing, so a task could
     state a bar its own cases were graded below with nothing noticing, in either
@@ -341,32 +494,42 @@ class ToleranceAuthorityTests(unittest.TestCase):
 
     def test_a_tolerance_tighter_than_the_framework_is_rejected(self):
         document = task_document("A_kernel")
-        document["tolerances"] = {"atol": 1e-6, "rtol": 1e-6, "max_abs_error": 1e-6}
+        document["tolerance_profiles"]["default"]["float16"] = {
+            "atol": 1e-6, "rtol": 1e-6, "max_abs_error": 1e-6
+        }
         errors = validator.validate_instance(document, "task_contract", engine="stdlib")
         self.assertTrue(any("tighter than the framework" in error for error in errors), errors)
 
     def test_a_task_may_loosen_the_framework_tolerance(self):
         """kb_l3_31 needs this: at bfloat16 its reference is the unstable side."""
         document = task_document("A_kernel")
-        document["tolerances"] = {"atol": 0.05, "rtol": 0.05, "max_abs_error": 0.05}
+        document["tolerance_profiles"]["default"]["float16"] = {
+            "atol": 0.05, "rtol": 0.05, "max_abs_error": 0.05
+        }
         self.assertEqual(validator.validate_instance(document, "task_contract", engine="stdlib"), [])
 
     def test_the_floor_follows_the_dtypes_the_task_declares(self):
         """The same 0.01 is loose at float32 and exactly at the line at float16."""
         float32 = task_document("A_kernel")
         float32["tensor_contract"] = {"input_dtypes": ["float32"], "accumulation_dtype": "float32"}
-        float32["tolerances"] = {"atol": 0.01, "rtol": 0.01, "max_abs_error": 0.01}
+        float32["tolerance_profiles"] = {
+            "default": {"float32": {"atol": 0.01, "rtol": 0.01, "max_abs_error": 0.01}}
+        }
         self.assertEqual(validator.validate_instance(float32, "task_contract", engine="stdlib"), [])
 
         float16 = task_document("A_kernel")
-        float16["tolerances"] = {"atol": 0.001, "rtol": 0.001, "max_abs_error": 0.001}
+        float16["tolerance_profiles"]["default"]["float16"] = {
+            "atol": 0.001, "rtol": 0.001, "max_abs_error": 0.001
+        }
         errors = validator.validate_instance(float16, "task_contract", engine="stdlib")
         self.assertTrue(any("tighter than the framework" in error for error in errors), errors)
 
     def test_the_rejection_names_both_the_declaration_and_the_floor(self):
         """An error that says only 'invalid' makes the reader go and find the table."""
         document = task_document("A_kernel")
-        document["tolerances"] = {"atol": 1e-5, "rtol": 1e-5, "max_abs_error": 1e-5}
+        document["tolerance_profiles"]["default"]["float16"] = {
+            "atol": 1e-5, "rtol": 1e-5, "max_abs_error": 1e-5
+        }
         errors = validator.validate_instance(document, "task_contract", engine="stdlib")
         message = next(error for error in errors if "tighter than the framework" in error)
         self.assertIn("1e-05", message)
@@ -481,7 +644,7 @@ class CaseManifestRuleTests(unittest.TestCase):
         protocol from `kernelbench.timing` -- and it had drifted to a different
         protocol than the one every number was measured under, so a reader could
         have believed a case was measured the way the block described. The rule is
-        the same one `tolerances_source` follows: one declaring place, or the second
+        the same one `performance_protocol` follows: one declaring place, or the second
         one drifts.
         """
         documented = case(tag="perf", expected_path="fused_library")
@@ -548,7 +711,13 @@ class ReportModeTests(unittest.TestCase):
             "backend": "musa",
             "precision": "fp16",
             "submission": "model_new.py",
-            "cases": [{"case_id": "smoke_001", "expected_path": "fused_library", "passed": True}],
+            "cases": [{
+                "case_id": "smoke_001",
+                "expected_path": "fused_library",
+                "correctness_reference": "independent_golden",
+                "golden_output_names": ["output"],
+                "passed": True,
+            }],
             "summary": {"cases": 1, "passed": 1, "failed": 0, "passed_overall": True},
         }
 
@@ -630,28 +799,36 @@ class BaselineRuleTests(unittest.TestCase):
         implementations = common + (
             ["naive_library_composition", "expert_dispatch"] if tier == "B_library" else []
         )
-        return {
+        document = {
             "schema_version": "1.0.0",
             "task_id": "example_b_v0",
             "tier": tier,
             "environment_snapshot": "musa-5f9d7b9dd1233a68",
+            "task_release_status": "release_ready",
             "measurement_protocol": {"timer": "cuda_event", "warmup": 3, "measurements": 100,
                                   "discard_first": 1, "statistic": "mean", "cache": "cold", "rounds": 1},
             "implementations": implementations,
             "results": [
-                {"case_id": "hidden_gap_001", "implementation": role, "status": "pass", "latency_ms": 0.1}
+                {
+                    "case_id": "hidden_gap_001", "implementation": role,
+                    "status": "pass", "latency_ms": 0.1,
+                    **({"dispatch_trace_passed": True} if role == "expert_dispatch" else {}),
+                }
                 for role in implementations
             ],
-            "readiness": {
-                "status": "complete", "required_roles": implementations, "case_count": 1,
-                "missing_roles": [], "missing_rows": [], "duplicate_rows": [],
-                "unavailable_rows": [], "nonpassing_rows": [], "problems": [],
-            },
             "scoring": {
                 "speedup_denominator": "expert_dispatch" if tier == "B_library" else "upstream_musa",
                 "correctness_gate": "all_hidden_cases",
+                "denominator_by_case": {
+                    "hidden_gap_001": {
+                        "implementation": "expert_dispatch" if tier == "B_library" else "upstream_musa",
+                        "reason": "frozen test denominator selection",
+                    }
+                },
             },
         }
+        document["readiness"] = readiness.assess(document)
+        return document
 
     def test_a_b_baseline_on_the_expert_dispatch_passes(self):
         self.assertEqual(validator.validate_instance_stdlib(self.baseline("B_library"), "baseline"), [])
@@ -698,6 +875,15 @@ class BaselineRuleTests(unittest.TestCase):
         errors = validator.validate_instance_stdlib(document, "baseline")
         self.assertTrue(any("minLength" in error for error in errors), errors)
 
+    def test_every_nonpassing_row_needs_a_reason(self):
+        for status in ("fail", "error", "unsupported"):
+            with self.subTest(status=status):
+                document = self.baseline("A_kernel")
+                document["results"][0].update(status=status)
+                document["results"][0].pop("reason", None)
+                errors = validator.validate_instance_stdlib(document, "baseline")
+                self.assertTrue(any("reason" in error for error in errors), errors)
+
     def test_a_stale_complete_readiness_record_is_rejected(self):
         document = self.baseline("A_kernel")
         document["results"].pop()
@@ -710,7 +896,7 @@ class BaselineRuleTests(unittest.TestCase):
         for path in paths:
             with self.subTest(template=path.name):
                 document = json.loads(path.read_text(encoding="utf-8"))
-                self.assertEqual(document["readiness"]["status"], "incomplete")
+                self.assertFalse(document["readiness"]["evidence_complete"])
                 self.assertEqual(
                     validator.validate_instance(document, "baseline", engine="stdlib"), []
                 )

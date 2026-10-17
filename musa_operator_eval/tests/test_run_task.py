@@ -22,6 +22,7 @@ Run with either:
 
 import importlib.util
 import json
+import struct
 import sys
 import tempfile
 import types
@@ -60,7 +61,6 @@ import os
 
 import torch
 import torch_musa
-import mudnn
 
 
 class ModelNew(torch.nn.Module):
@@ -274,7 +274,7 @@ class RunCaseWiringTests(unittest.TestCase):
     failure, so the wiring is pinned rather than assumed.
     """
 
-    def _drive(self, num_perf_trials, tier=None):
+    def _drive(self, num_perf_trials, tier=None, generated_dir=None):
         task, cases, problem_source = run_task.load_task(TASK_DIR)
         if tier is not None:
             task = dict(task)
@@ -286,7 +286,12 @@ class RunCaseWiringTests(unittest.TestCase):
             correctness = True
             runtime = 12.5
             ref_runtime = 25.0
-            metadata = {"tier": task["tier"]}
+            metadata = {
+                "tier": task["tier"],
+                "correctness_reference": (
+                    "independent_golden" if generated_dir is not None else "problem_model"
+                ),
+            }
 
             def __init__(self):
                 self.dispatch_trace_passed = True if task["tier"] == "B_library" else None
@@ -307,11 +312,14 @@ class RunCaseWiringTests(unittest.TestCase):
         fake_eval.get_torch_dtype_from_string = lambda name: name
         fake_package = types.ModuleType("kernelbench")
 
-        with mock.patch.dict(sys.modules, {"kernelbench": fake_package, "kernelbench.eval": fake_eval}):
+        payload = (["fixed-input"], ["oracle-output"], ["output"])
+        with mock.patch.object(run_task, "case_correctness_payload", return_value=payload), \
+                mock.patch.dict(sys.modules, {"kernelbench": fake_package, "kernelbench.eval": fake_eval}):
             row = run_task.run_case(
                 task, cases["cases"][0], problem_source, VALID_SUBMISSION,
                 backend="musa", precision="fp16",
                 num_correct_trials=1, num_perf_trials=num_perf_trials, verbose=False,
+                generated_dir=generated_dir,
             )
         return captured, row
 
@@ -337,10 +345,23 @@ class RunCaseWiringTests(unittest.TestCase):
         captured, _ = self._drive(num_perf_trials=25)
         self.assertTrue(captured.get("measure_performance"), "timing must be switched on explicitly")
         self.assertEqual(captured["num_perf_trials"], 25)
+        self.assertEqual(captured["timing_method"], "cuda_event")
+        self.assertEqual(captured["num_perf_warmup"], 3)
+        self.assertEqual(captured["num_perf_discard_first"], 1)
 
     def test_zero_perf_trials_disables_measurement(self):
         captured, _ = self._drive(num_perf_trials=0)
         self.assertFalse(captured.get("measure_performance"))
+
+    def test_generated_inputs_and_independent_golden_control_correctness(self):
+        captured, row = self._drive(
+            num_perf_trials=0,
+            generated_dir=Path("generated"),
+        )
+        self.assertEqual(captured["golden_inputs"], ["fixed-input"])
+        self.assertEqual(captured["golden_outputs"], ["oracle-output"])
+        self.assertEqual(captured["golden_output_names"], ["output"])
+        self.assertEqual(row["correctness_reference"], "independent_golden")
 
     def test_case_identity_and_expected_path_are_forwarded(self):
         captured, _ = self._drive(num_perf_trials=5)
@@ -352,6 +373,70 @@ class RunCaseWiringTests(unittest.TestCase):
         self.assertEqual(row["runtime"], 12.5)
         self.assertEqual(row["ref_runtime"], 25.0)
         self.assertTrue(row["passed"])
+
+
+class PerformanceProtocolTests(unittest.TestCase):
+    def test_a_noncanonical_trial_count_is_rejected_before_case_generation(self):
+        task, cases, problem_source = run_task.load_task(TASK_DIR)
+        with mock.patch.object(
+            run_task, "materialize_runtime_generalization",
+            side_effect=AssertionError("protocol mismatch must stop before generation"),
+        ):
+            report = run_task.evaluate_task(
+                task, cases, problem_source, VALID_SUBMISSION,
+                backend="musa", precision="fp16",
+                num_correct_trials=1, num_perf_trials=25, verbose=False,
+                generated_dir=Path("generated"), task_dir=TASK_DIR,
+            )
+        self.assertEqual(
+            report["summary"]["exit_code"],
+            exit_codes.EXIT_PERFORMANCE_PROTOCOL_MISMATCH,
+        )
+        self.assertIn("requested 25 performance trials", " ".join(report["contract"]["errors"]))
+
+    def test_the_frozen_protocol_accepts_the_formal_trial_count(self):
+        task, _, _ = run_task.load_task(TASK_DIR)
+        self.assertEqual(run_task.performance_protocol_errors(task, 100), [])
+
+
+class CaseCorrectnessPayloadTests(unittest.TestCase):
+    def _write_tensor_dir(self, directory, records):
+        directory.mkdir(parents=True)
+        manifest = {"tensors": []}
+        for name, values in records:
+            filename = f"{name}.bin"
+            (directory / filename).write_bytes(struct.pack(f"<{len(values)}f", *values))
+            manifest["tensors"].append({
+                "name": name,
+                "file": filename,
+                "dtype": "float32",
+                "shape": [len(values)],
+            })
+        (directory / "tensors.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+
+    def test_payload_preserves_input_order_and_ignores_diagnostic_goldens(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            generated = Path(temporary)
+            self._write_tensor_dir(
+                generated / "c1" / "input",
+                [("input_0", [1.0, 2.0]), ("input_1", [3.0])],
+            )
+            self._write_tensor_dir(
+                generated / "c1" / "golden",
+                [("output", [4.0]), ("lse", [5.0])],
+            )
+            task = {"outputs": {"required": ["output", "dispatch_trace"]}}
+            case = {"case_id": "c1", "golden": "c1/golden/tensors.json"}
+
+            inputs, expected, names = run_task.case_correctness_payload(
+                task, case, generated
+            )
+
+        self.assertEqual([value.tolist() for value in inputs], [[1.0, 2.0], [3.0]])
+        self.assertEqual([value.tolist() for value in expected], [[4.0]])
+        self.assertEqual(names, ["output"])
 
 
 class EnvironmentStageTests(unittest.TestCase):
@@ -688,7 +773,7 @@ class ShortCircuitTests(unittest.TestCase):
         ):
             report = run_task.evaluate_task(
                 task, {"cases": self.cases_list}, self.problem_source, VALID_SUBMISSION,
-                "musa", "fp16", 1, 5, False, Path("/tmp/unused"),
+                "musa", "fp16", 1, 100, False, Path("/tmp/unused"),
             )
         self.assertEqual(report["summary"]["exit_code"], exit_codes.EXIT_TASK_NOT_ADMITTED)
         self.assertEqual(report["stages"], [])
@@ -855,7 +940,7 @@ class ShortCircuitTests(unittest.TestCase):
         )), mock.patch.object(run_task, "run_case", side_effect=AssertionError("must not run")):
             report = run_task.evaluate_task(
                 self.task, cases_manifest, self.problem_source, VALID_SUBMISSION,
-                "musa", "fp16", 1, 5, False, Path("/tmp/unused"),
+                "musa", "fp16", 1, 100, False, Path("/tmp/unused"),
             )
         self.assertEqual(report["summary"]["exit_code"], exit_codes.EXIT_STATIC_AUDIT_FORBIDDEN_API)
         self.assertNotIn("evaluation", report["stages"])
@@ -868,7 +953,7 @@ class ShortCircuitTests(unittest.TestCase):
         }), mock.patch.object(run_task, "run_static_audit", side_effect=AssertionError("must not run")):
             report = run_task.evaluate_task(
                 self.task, cases_manifest, self.problem_source, VALID_SUBMISSION,
-                "musa", "fp16", 1, 5, False, Path("/tmp/unused"),
+                "musa", "fp16", 1, 100, False, Path("/tmp/unused"),
             )
         self.assertEqual(report["summary"]["exit_code"], exit_codes.EXIT_GOLDEN_MISSING)
         self.assertNotIn("static_audit", report["stages"])
@@ -888,7 +973,7 @@ class ShortCircuitTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as temporary:
                 report = run_task.evaluate_task(
                     self.task, cases_manifest, self.problem_source, VALID_SUBMISSION,
-                    "musa", "fp16", 1, 5, False, Path(temporary), TASK_DIR,
+                    "musa", "fp16", 1, 100, False, Path(temporary), TASK_DIR,
                 )
         self.assertEqual(report["summary"]["exit_code"], exit_codes.EXIT_ENVIRONMENT_UNAVAILABLE)
         self.assertIn("torch", report["environment"]["error"])
@@ -904,7 +989,7 @@ class ShortCircuitTests(unittest.TestCase):
                 }), mock.patch.object(run_task, "run_case", side_effect=ImportError("No module named 'torch'")):
             report = run_task.evaluate_task(
                 self.task, cases_manifest, self.problem_source, VALID_SUBMISSION,
-                "musa", "fp16", 1, 5, False, Path("/tmp/unused"),
+                "musa", "fp16", 1, 100, False, Path("/tmp/unused"),
             )
         self.assertEqual(report["summary"]["exit_code"], exit_codes.EXIT_ENVIRONMENT_UNAVAILABLE)
         self.assertIn("torch", report["environment"]["error"])
@@ -929,7 +1014,7 @@ class ShortCircuitTests(unittest.TestCase):
         }), mock.patch.object(run_task, "run_case", self._stub_rows({})):
             report = run_task.evaluate_task(
                 task, cases_manifest, self.problem_source, VALID_SUBMISSION,
-                "musa", "fp16", 1, 5, False, Path("/tmp/unused"),
+                "musa", "fp16", 1, 100, False, Path("/tmp/unused"),
             )
         self.assertEqual(
             report["stages"],
@@ -947,7 +1032,7 @@ class ShortCircuitTests(unittest.TestCase):
                 mock.patch.object(run_task, "run_case", side_effect=AssertionError("must not run")):
             report = run_task.evaluate_task(
                 self.task, cases_manifest, self.problem_source, VALID_SUBMISSION,
-                "musa", "fp16", 1, 5, False, Path("/tmp/unused"),
+                "musa", "fp16", 1, 100, False, Path("/tmp/unused"),
             )
         self.assertEqual(report["summary"]["exit_code"], exit_codes.EXIT_BUILD_FAILED)
         self.assertNotIn("evaluation", report["stages"])
@@ -969,7 +1054,7 @@ class ShortCircuitTests(unittest.TestCase):
                 }), mock.patch.object(run_task, "run_case", side_effect=AssertionError("must not run")):
             report = run_task.evaluate_task(
                 task, cases_manifest, self.problem_source, VALID_SUBMISSION,
-                "musa", "fp16", 1, 5, False, Path("/tmp/unused"),
+                "musa", "fp16", 1, 100, False, Path("/tmp/unused"),
             )
         self.assertEqual(report["summary"]["exit_code"], exit_codes.EXIT_LINK_WHITELIST_VIOLATION)
         self.assertIn("link_whitelist_check", report["stages"])
@@ -989,7 +1074,7 @@ class ShortCircuitTests(unittest.TestCase):
                 mock.patch.object(run_task, "run_case", self._stub_rows({})):
             report = run_task.evaluate_task(
                 task, cases_manifest, self.problem_source, VALID_SUBMISSION,
-                "musa", "fp16", 1, 5, False, Path("/tmp/unused"),
+                "musa", "fp16", 1, 100, False, Path("/tmp/unused"),
             )
         self.assertNotIn("link_whitelist_check", report["stages"])
         self.assertNotIn("link_whitelist", report)
@@ -1011,7 +1096,7 @@ class ShortCircuitTests(unittest.TestCase):
                 mock.patch.object(run_task, "run_case", self._stub_rows({})):
             report = run_task.evaluate_task(
                 task, cases_manifest, self.problem_source, VALID_SUBMISSION,
-                "musa", "fp16", 1, 5, False, Path("/tmp/unused"),
+                "musa", "fp16", 1, 100, False, Path("/tmp/unused"),
             )
         self.assertEqual(report["summary"]["exit_code"], exit_codes.EXIT_LINK_WHITELIST_VIOLATION)
         self.assertEqual(report["link_whitelist"]["after_evaluation"]["new_errors"], late["errors"])

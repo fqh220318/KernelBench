@@ -43,11 +43,25 @@ def baseline(task_id: str, tier: str, denominator: str, latencies: dict) -> dict
         "schema_version": "1.0.0",
         "task_id": task_id,
         "tier": tier,
-        "scoring": {"speedup_denominator": denominator, "reference_implementation": "torch_musa_eager"},
+        "task_release_status": "release_ready",
+        "scoring": {
+            "speedup_denominator": denominator,
+            "reference_implementation": "torch_musa_eager",
+            "denominator_by_case": {
+                case_id: {
+                    "implementation": denominator,
+                    "reason": "frozen unit-test denominator",
+                }
+                for case_id in latencies
+            },
+        },
         "implementations": roles,
         "results": [
-            {"case_id": case_id, "implementation": role, "status": "pass",
-             "latency_ms": latency if role == denominator else 1.0}
+            {
+                "case_id": case_id, "implementation": role, "status": "pass",
+                "latency_ms": latency if role == denominator else 1.0,
+                **({"dispatch_trace_passed": True} if role == "expert_dispatch" else {}),
+            }
             for case_id, latency in latencies.items() for role in roles
         ],
     }
@@ -90,22 +104,32 @@ class RankingTests(unittest.TestCase):
         row = rank.rank_report(report("task", "B_library", {"c1": 1.0, "c2": 1.0}), baselines)
         self.assertEqual(row["geometric_mean_ratio"], 2.0)
 
-    def test_a_nonpassing_mandatory_denominator_blocks_the_whole_baseline(self):
+    def test_a_nonpassing_denominator_case_makes_the_whole_task_unranked(self):
         record = baseline("task", "A_kernel", "upstream_musa", {"c1": 2.0, "c2": 2.0})
         row = next(row for row in record["results"]
                    if row["case_id"] == "c2" and row["implementation"] == "upstream_musa")
-        row.update(status="error", latency_ms=None)
+        row.update(status="error", latency_ms=None, reason="unsupported shape")
         record["readiness"] = rank.assess(record)
         baselines = {"task": record}
         row = rank.rank_report(report("task", "A_kernel", {"c1": 1.0, "c2": 0.5}), baselines)
-        self.assertIn("baseline roster is incomplete", row["unranked"])
-        self.assertTrue(row["baseline_problems"])
+        self.assertIn("not scoreable", row["unranked"])
+        self.assertTrue(any("c2" in problem for problem in row["baseline_problems"]))
 
-    def test_a_case_without_a_runtime_is_excluded(self):
+    def test_a_baseline_without_any_passing_denominator_is_not_ranked(self):
+        record = baseline("task", "A_kernel", "upstream_musa", {"c1": 2.0})
+        denominator = next(row for row in record["results"]
+                           if row["implementation"] == "upstream_musa")
+        denominator.update(status="unsupported", latency_ms=None, reason="no equivalent path")
+        record["readiness"] = rank.assess(record)
+        row = rank.rank_report(report("task", "A_kernel", {"c1": 1.0}), {"task": record})
+        self.assertIn("not scoreable", row["unranked"])
+
+    def test_a_case_without_a_runtime_makes_the_whole_task_unranked(self):
         baselines = {"task": baseline("task", "A_kernel", "upstream_musa", {"c1": 2.0})}
         row = rank.rank_report(report("task", "A_kernel", {"c1": None}), baselines)
         self.assertEqual(row["cases_compared"], 0)
         self.assertIn("no usable runtime", row["excluded"]["c1"])
+        self.assertIn("every scoring case", row["unranked"])
 
     def test_a_report_without_a_baseline_is_listed_rather_than_dropped(self):
         row = rank.rank_report(report("orphan", "A_kernel", {"c1": 1.0}), {})

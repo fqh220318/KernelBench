@@ -147,6 +147,50 @@ class AgentPackageAuditTests(unittest.TestCase):
         report = self.audit.audit_package(self.package)
         self.assertTrue(report["passed"], report["findings"])
 
+    def test_legacy_package_fails_the_normative_release_audit(self):
+        findings = self.audit.audit_package(self.package, normative=True)["findings"]
+        self.assertTrue(any("legacy provenance" in finding for finding in findings), findings)
+        self.assertTrue(any("opaque source_id" in finding for finding in findings), findings)
+        self.assertTrue(any("hardware_pending or release_ready" in finding for finding in findings), findings)
+        self.assertTrue(any("upstream problem body" in finding for finding in findings), findings)
+
+    def test_the_migrated_pilot_passes_the_normative_package_audit(self):
+        pilot = self.audit.ROOT / "tasks" / "sdpa_forward_pilot"
+        report = self.audit.audit_package(pilot, normative=True)
+        self.assertTrue(report["passed"], report["findings"])
+
+    def test_a_normative_a_tier_package_does_not_need_a_b_tier_call_surface(self):
+        pilot = Path(self.temporary.name) / "normative_a"
+        shutil.copytree(self.audit.ROOT / "tasks" / "sdpa_forward_pilot", pilot)
+        task_path = pilot / "task.json"
+        task = json.loads(task_path.read_text(encoding="utf-8"))
+        task["tier"] = "A_kernel"
+        task.pop("library_policy", None)
+        task_path.write_text(json.dumps(task, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        findings = self.audit.audit_package(pilot, normative=True)["findings"]
+        self.assertFalse(
+            any("normative B-tier execution" in finding for finding in findings),
+            findings,
+        )
+
+    def test_a_normative_package_must_ship_the_oracle_it_declares(self):
+        pilot = Path(self.temporary.name) / "missing_oracle"
+        shutil.copytree(self.audit.ROOT / "tasks" / "sdpa_forward_pilot", pilot)
+        (pilot / "reference" / "sdpa_reference.py").unlink()
+
+        findings = self.audit.audit_package(pilot, normative=True)["findings"]
+        self.assertTrue(any("shipped golden_oracle" in finding for finding in findings), findings)
+
+    def test_a_physical_compiled_artifact_is_rejected_even_if_undeclared(self):
+        pilot = Path(self.temporary.name) / "migrated_pilot"
+        shutil.copytree(self.audit.ROOT / "tasks" / "sdpa_forward_pilot", pilot)
+        compiled = pilot / "starter" / "cpp"
+        compiled.mkdir(parents=True, exist_ok=True)
+        (compiled / "kernel.mu").write_text("// research-only artifact\n", encoding="utf-8")
+        findings = self.audit.audit_package(pilot, normative=True)["findings"]
+        self.assertTrue(any("compiled artifacts are research-only" in item for item in findings), findings)
+
     def test_a_maintainer_only_file_is_caught(self):
         (self.package / "cases.private.json").write_text("{}", encoding="utf-8")
         findings = self.audit.audit_package(self.package)["findings"]
@@ -408,6 +452,15 @@ class HiddenCaseListTests(unittest.TestCase):
                     & {json.dumps(case["shape"], sort_keys=True) for case in hidden["cases"]},
                     f"{task['id']} repeats a public shape in the hidden list",
                 )
+
+    def test_swin_hidden_cases_stay_inside_the_reserved_batch_domain(self):
+        task_id = "swin_transformer_v2_a_v0"
+        hidden = json.loads(self.manifest_for({"id": task_id}).read_text(encoding="utf-8"))
+
+        self.assertTrue(hidden["cases"], f"{task_id} has no hidden cases")
+        for case in hidden["cases"]:
+            with self.subTest(case=case["case_id"]):
+                self.assertEqual(case["shape"], {"B": 4, "image": 224})
 
     def test_every_package_has_a_baseline_record_for_its_hidden_set(self):
         """§4.4's minimum record, checked for presence and for the fields it names."""

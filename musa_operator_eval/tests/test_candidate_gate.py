@@ -28,10 +28,13 @@ evaluate = candidate_gate.evaluate
 
 
 def measurement(case_id, implementation, latency_ms, status="pass"):
-    return {
+    row = {
         "case_id": case_id, "implementation": implementation,
         "status": status, "latency_ms": latency_ms,
     }
+    if implementation == "expert_dispatch":
+        row["dispatch_trace_passed"] = status == "pass"
+    return row
 
 
 def baseline(results, threshold=1.3):
@@ -45,9 +48,20 @@ def baseline(results, threshold=1.3):
                 results.append(measurement(case_id, implementation, 1.0))
     document = {
         "tier": "B_library",
+        "task_release_status": "hardware_pending",
         "implementations": list(candidate_gate.B_REQUIRED_ROLES),
         "results": results,
-        "scoring": {"minimum_naive_to_expert_ratio": threshold},
+        "scoring": {
+            "speedup_denominator": "expert_dispatch",
+            "minimum_naive_to_expert_ratio": threshold,
+            "denominator_by_case": {
+                case_id: {
+                    "implementation": "expert_dispatch",
+                    "reason": "B-tier expert denominator frozen for gate test",
+                }
+                for case_id in case_ids
+            },
+        },
     }
     document["readiness"] = candidate_gate.assess(document)
     return document
@@ -127,7 +141,7 @@ class PairingTests(unittest.TestCase):
             measurement("c2", "naive_library_composition", 100.0),
         ]))
         self.assertEqual(result["decision"], "insufficient_data")
-        self.assertEqual(result["readiness"]["status"], "incomplete")
+        self.assertFalse(result["readiness"]["evidence_complete"])
 
     def test_a_case_missing_the_naive_makes_the_baseline_incomplete(self):
         result = evaluate(baseline([
@@ -136,7 +150,7 @@ class PairingTests(unittest.TestCase):
             measurement("c2", "expert_dispatch", 1.0),
         ]))
         self.assertEqual(result["decision"], "insufficient_data")
-        self.assertEqual(result["readiness"]["status"], "incomplete")
+        self.assertFalse(result["readiness"]["evidence_complete"])
 
     def test_a_failing_implementation_is_not_paired(self):
         """A ratio against a wrong answer would admit a task for the wrong reason."""
@@ -182,7 +196,7 @@ class PairingTests(unittest.TestCase):
         ]))
         self.assertEqual(result["ratios"], {"c1": 4.0})
 
-    def test_a_required_unavailable_implementation_makes_the_gate_incomplete(self):
+    def test_unavailable_auxiliary_roles_do_not_replace_the_naive_expert_gate(self):
         result = evaluate(baseline([
             measurement("c1", "naive_library_composition", 4.0),
             measurement("c1", "expert_dispatch", 1.0),
@@ -190,8 +204,8 @@ class PairingTests(unittest.TestCase):
             measurement("c1", "mudnn_fused", None, status="unavailable"),
             measurement("c1", "torch_musa_eager", None, status="unavailable"),
         ]))
-        self.assertEqual(result["decision"], "insufficient_data")
-        self.assertEqual(result["readiness"]["status"], "incomplete")
+        self.assertEqual(result["decision"], "admit")
+        self.assertTrue(result["readiness"]["evidence_complete"])
         self.assertTrue(result["readiness"]["unavailable_rows"])
 
 

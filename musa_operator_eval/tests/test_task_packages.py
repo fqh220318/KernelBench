@@ -1,15 +1,14 @@
 """Structural checks over every task package.
 
-Two rules earn their keep here.
+Two release-boundary rules earn their keep here.
 
 The first is coverage: the attention set decides which entries belong to which
 tier, so a set entry that is eligible for a tier and has no package for it is a
 row in the ledger that nobody can act on.
 
-The second is that an A-tier reference is a copy. The A tier is the default tier
-and an A-tier task *is* a KernelBench problem, so the package carries the problem
-rather than restating it. A copy is only safe if drift is detectable, which is
-what the byte-for-byte check below is for.
+The second is reference provenance. Legacy A-tier research packages retain an exact
+problem copy so historical evidence cannot drift. Normative packages must instead ship
+an independent oracle and must not disclose their upstream source mapping.
 """
 
 import ast
@@ -64,16 +63,66 @@ def all_packages():
     return list(packages())
 
 
+class LifecycleDecisionTests(unittest.TestCase):
+    """Freeze the Phase 22 task-admission decisions as part of the release boundary."""
+
+    EXPECTED_A_DECISIONS = {
+        "scaled_dot_product_attention_a_v0": "research_only",
+        "swin_transformer_v2_a_v0": "keep",
+        "vision_attention_a_v0": "research_only",
+        "mingpt_causal_attention_a_v0": "research_only",
+        "mingpt_block_a_v0": "research_only",
+        "relu_causal_attention_a_v0": "keep",
+    }
+
+    def test_every_task_has_an_explicit_lifecycle_decision(self):
+        for directory, task in all_packages():
+            with self.subTest(task=directory.name):
+                lifecycle = task.get("lifecycle") or {}
+                self.assertIn(
+                    lifecycle.get("decision"),
+                    {"keep", "redesign_new_id", "retire", "research_only"},
+                )
+                self.assertTrue(lifecycle.get("reason"))
+                self.assertTrue(lifecycle.get("successor_policy"))
+
+    def test_a_tier_admission_decisions_are_frozen(self):
+        actual = {
+            task["id"]: task["lifecycle"]["decision"]
+            for _, task in all_packages()
+            if task["tier"] == "A_kernel"
+        }
+        self.assertEqual(actual, self.EXPECTED_A_DECISIONS)
+
+
 class SetCoverageTests(unittest.TestCase):
     """The set is the ledger; a package is what makes a row in it actionable."""
 
     def setUp(self):
         self.entries = json.loads(SET_PATH.read_text(encoding="utf-8"))["entries"]
         self.packaged = {}
-        for _, task in all_packages():
+        tasks = [task for _, task in all_packages()]
+        for task in tasks:
             entry = task.get("set_entry")
             if entry:
                 self.packaged.setdefault(entry, set()).add(task["tier"])
+
+        # Normative Agent packages deliberately do not expose their upstream
+        # entry. The maintainer-side reverse map restores that relation for this
+        # ledger check without weakening the release boundary.
+        registry_path = ROOT / "private" / "provenance_registry.json"
+        self.private_registry_available = registry_path.is_file()
+        if self.private_registry_available:
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+            source_by_id = {row["source_id"]: row for row in registry["sources"]}
+            binding_by_task = {row["task_id"]: row["source_id"] for row in registry["task_bindings"]}
+            for task in tasks:
+                if task.get("normative_spec") != "1.0.0" or task.get("scope") == "family":
+                    continue
+                source = source_by_id.get(binding_by_task.get(task["id"])) or {}
+                entry = source.get("set_entry")
+                if entry:
+                    self.packaged.setdefault(entry, set()).add(task["tier"])
 
     def test_every_entry_scoped_package_names_the_entry_it_realises(self):
         """A family-scoped package names the entries it covers instead.
@@ -85,9 +134,20 @@ class SetCoverageTests(unittest.TestCase):
         for directory, task in all_packages():
             with self.subTest(task=directory.name):
                 if task.get("scope") == "family":
-                    self.assertIn("covers", task, f"{directory.name} is family-scoped but names no coverage")
-                    self.assertTrue(task["covers"]["entries"])
+                    if task.get("normative_spec") == "1.0.0":
+                        self.assertNotIn(
+                            "covers", task,
+                            f"{directory.name} exposes the private upstream coverage mapping",
+                        )
+                    else:
+                        self.assertIn("covers", task, f"{directory.name} is family-scoped but names no coverage")
+                        self.assertTrue(task["covers"]["entries"])
                     self.assertNotIn("set_entry", task)
+                elif task.get("normative_spec") == "1.0.0":
+                    self.assertNotIn(
+                        "set_entry", task,
+                        f"{directory.name} exposes the private upstream entry mapping",
+                    )
                 else:
                     self.assertIn("set_entry", task, f"{directory.name} does not name a set entry")
 
@@ -111,6 +171,8 @@ class SetCoverageTests(unittest.TestCase):
                     continue
                 if tier not in self.packaged.get(entry["entry_id"], set()):
                     missing.append((entry["entry_id"], tier))
+        if missing and not self.private_registry_available:
+            self.skipTest("the normative source-to-entry reverse map is private and is not mounted")
         self.assertEqual(missing, [], f"eligible in the set but has no package: {missing}")
 
     def test_no_package_claims_a_tier_its_entry_is_ineligible_for(self):
@@ -145,6 +207,11 @@ class SourceProvenanceTests(unittest.TestCase):
 
     def test_every_task_pins_its_source(self):
         for directory, task in all_packages():
+            if task.get("normative_spec") == "1.0.0":
+                with self.subTest(task=directory.name):
+                    self.assertNotIn("source", task)
+                    self.assertRegex(task.get("source_id", ""), r"^src_[0-9a-f]{16}$")
+                continue
             source = task.get("source") or {}
             with self.subTest(task=directory.name):
                 self.assertEqual(self.REQUIRED_SOURCE_FIELDS - set(source), set())
@@ -156,12 +223,16 @@ class SourceProvenanceTests(unittest.TestCase):
 
     def test_every_source_record_exists(self):
         for directory, task in all_packages():
+            if task.get("normative_spec") == "1.0.0":
+                continue
             record = ROOT / task["source"]["record"]
             with self.subTest(task=directory.name):
                 self.assertTrue(record.is_file(), f"{task['id']}: missing {record}")
 
     def test_in_repository_snapshots_name_real_files(self):
         for directory, task in all_packages():
+            if task.get("normative_spec") == "1.0.0":
+                continue
             source = task["source"]
             if source["project"] != "KernelBench problem set":
                 continue
@@ -177,10 +248,14 @@ class SourceProvenanceTests(unittest.TestCase):
         self.assertTrue(archive["repository"].startswith("https://"))
 
 class AReferenceIdentityTests(unittest.TestCase):
-    """An A-tier reference is the KernelBench problem, byte for byte."""
+    """Legacy A references remain copies; normative ones must be independent."""
 
     def a_tier(self):
-        return [(directory, task) for directory, task in all_packages() if task["tier"] == "A_kernel"]
+        return [
+            (directory, task)
+            for directory, task in all_packages()
+            if task["tier"] == "A_kernel" and task.get("normative_spec") != "1.0.0"
+        ]
 
     def test_there_is_at_least_one_a_tier_package(self):
         self.assertTrue(self.a_tier())
@@ -290,6 +365,37 @@ class PublicCaseTests(unittest.TestCase):
                 self.assertEqual(len(set(identifiers)), len(identifiers))
                 self.assertEqual(len(set(seeds)), len(seeds))
 
+    def test_every_case_selects_a_profile_that_covers_its_dtype(self):
+        for directory, task in all_packages():
+            cases = json.loads((directory / "public_cases.json").read_text(encoding="utf-8"))["cases"]
+            for case in cases:
+                with self.subTest(task=task["id"], case=case["case_id"]):
+                    self.assertIsInstance(case["attributes"], dict)
+                    self.assertIn(case["distribution"], {"normal", "uniform", "adversarial_extremes"})
+                    profile = task["tolerance_profiles"][case["tolerance_profile"]]
+                    self.assertIn(case["dtype"], profile)
+
+    def test_every_task_freezes_the_same_formal_timing_protocol(self):
+        expected = {
+            "timer": "device_event", "warmup": 3, "measurements": 100,
+            "discard_first": 1, "cache": "l2_flush_each_trial", "statistic": "mean",
+            "diagnostics": ["samples", "p10", "p50", "p90", "std", "min", "max"],
+        }
+        for _, task in all_packages():
+            with self.subTest(task=task["id"]):
+                self.assertEqual(task["performance_protocol"], expected)
+
+    def test_swin_public_cases_leave_the_hidden_batch_boundary_unoccupied(self):
+        """Swin cannot vary image size, so B=4 is its hidden-only shape domain."""
+        directory = TASKS_DIR / "kb_l3_30_a"
+        manifest = json.loads((directory / "public_cases.json").read_text(encoding="utf-8"))
+        semantics = json.loads((directory / "semantics.json").read_text(encoding="utf-8"))
+
+        self.assertEqual([case["shape"]["B"] for case in manifest["cases"]], [1, 2, 3])
+        self.assertEqual(semantics["dynamic_axes"]["B"], [1, 4])
+        self.assertIn("B=4 is reserved", manifest["case_generation"]["note"])
+        self.assertIn("B=4 is reserved", semantics["note"])
+
 
 class ContractMinimumTests(unittest.TestCase):
     """§4.1's field list, checked field by field rather than in aggregate.
@@ -368,14 +474,8 @@ class PublicCaseListTests(unittest.TestCase):
                     )
 
 
-class TierPairTests(unittest.TestCase):
-    """An entry that has both tiers must keep the two packages comparable.
-
-    §4.2 of the guide: if the two semantic contracts of one family disagree, the
-    goldens and the case generator stop being reusable and the two tiers become
-    two incomparable evaluations. The guide states the requirement and leaves it
-    to hand discipline; this is the discipline.
-    """
+class LegacyPairIsolationTests(unittest.TestCase):
+    """Historical paired assets remain comparable research records only."""
 
     def pairs(self):
         by_entry = {}
@@ -387,8 +487,13 @@ class TierPairTests(unittest.TestCase):
             if "A_kernel" in tiers and "B_library" in tiers:
                 yield entry, tiers
 
-    def test_there_is_at_least_one_entry_with_both_tiers(self):
-        self.assertTrue(list(self.pairs()))
+    def test_every_legacy_pair_is_research_only(self):
+        for entry, tiers in self.pairs():
+            with self.subTest(entry=entry):
+                self.assertEqual(
+                    {task["lifecycle"]["decision"] for _, task in tiers.values()},
+                    {"research_only"},
+                )
 
     def test_the_two_tiers_of_an_entry_share_one_semantic_contract(self):
         for entry, tiers in self.pairs():
@@ -586,7 +691,9 @@ class StarterInventoryTests(unittest.TestCase):
         """
         frozen = {}
         for directory, task in self.packages():
-            cpp = task["starter"]["cpp"]
+            cpp = task["starter"].get("cpp")
+            if not cpp:
+                continue
             for relative in cpp["frozen"]:
                 name = Path(relative).name
                 if name == "build.sh":
@@ -605,7 +712,10 @@ class StarterInventoryTests(unittest.TestCase):
         """The kernel is what a submission writes; the runner and the ABI are not."""
         for directory, task in self.packages():
             with self.subTest(task=task["id"]):
-                cpp = task["starter"]["cpp"]
+                cpp = task["starter"].get("cpp")
+                if not cpp:
+                    self.assertEqual(task.get("normative_spec"), "1.0.0")
+                    continue
                 self.assertEqual(cpp["editable"], [task["starter"]["cpp"]["path"] + "/kernel.mu"])
                 self.assertNotIn("kernel.mu", " ".join(Path(entry).name for entry in cpp["frozen"]))
 
@@ -670,9 +780,13 @@ class StarterInventoryTests(unittest.TestCase):
         for directory, task in self.packages():
             if task["tier"] != "B_library":
                 continue
-            declared = task["starter"]["link_whitelist"]
             policy = task["library_policy"]
             with self.subTest(task=task["id"]):
+                if task.get("normative_spec") == "1.0.0":
+                    self.assertNotIn("link_whitelist", task["starter"])
+                    self.assertEqual(policy.get("formal_call_surface"), "torch_musa")
+                    continue
+                declared = task["starter"]["link_whitelist"]
                 self.assertEqual(declared["allowed_libraries"], policy["allowed_libraries"])
                 self.assertEqual(
                     declared["allowed_symbol_prefixes"], policy["allowed_symbol_prefixes"]
@@ -685,7 +799,7 @@ class StarterInventoryTests(unittest.TestCase):
             abi = task["starter"]["abi"]
             with self.subTest(task=task["id"]):
                 self.assertIsInstance(abi["runner_imports_libtorch"], bool)
-                if abi["runner_imports_libtorch"]:
+                if abi["runner_imports_libtorch"] and task.get("normative_spec") != "1.0.0":
                     self.assertIn("deviation", abi)
 
     def test_the_starter_does_not_disclose_what_the_prompt_may_not(self):
@@ -982,6 +1096,11 @@ class GapReasonVocabularyTests(unittest.TestCase):
                 self.assertEqual(coverage["state"], "blocked")
                 self.assertEqual(set(coverage["reachable"]), set(reasons))
                 self.assertTrue(coverage["basis"])
+                self.assertEqual(task["admission"].get("decision"), "reject")
+                self.assertIn(
+                    task["lifecycle"]["decision"],
+                    {"redesign_new_id", "retire", "research_only"},
+                )
 
 
 class TensorContractTests(unittest.TestCase):

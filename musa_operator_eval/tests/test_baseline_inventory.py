@@ -30,6 +30,7 @@ class BaselineInventoryTests(unittest.TestCase):
             "id": "example_b_v0",
             "tier": "B_library",
             "admission": {"status": "measured", "decision": "admit"},
+            "publication": {"release_status": "hardware_pending"},
         }
         (task_dir / "task.json").write_text(json.dumps(task), encoding="utf-8")
         private = root / "private" / task["id"]
@@ -46,11 +47,25 @@ class BaselineInventoryTests(unittest.TestCase):
         baseline = {
             "task_id": "example_b_v0",
             "tier": "B_library",
+            "task_release_status": "hardware_pending",
             "implementations": roles,
             "results": [
-                {"case_id": "hidden_case_secret", "implementation": role, "status": "pass"}
+                {
+                    "case_id": "hidden_case_secret", "implementation": role,
+                    "status": "pass", "latency_ms": 1.0,
+                    **({"dispatch_trace_passed": True} if role == "expert_dispatch" else {}),
+                }
                 for role in roles
             ],
+            "scoring": {
+                "speedup_denominator": "expert_dispatch",
+                "denominator_by_case": {
+                    "hidden_case_secret": {
+                        "implementation": "expert_dispatch",
+                        "reason": "frozen inventory-test denominator",
+                    }
+                },
+            },
         }
         baseline["readiness"] = self.tool.assess(baseline, ["hidden_case_secret"])
         return baseline
@@ -69,15 +84,18 @@ class BaselineInventoryTests(unittest.TestCase):
         root = self.make_root(baseline, manifest)
         plan = self.tool.build_plan(root)
         self.assertEqual(plan["tasks"][0]["collection_status"], "complete")
+        self.assertTrue(plan["tasks"][0]["evidence_complete"])
+        self.assertTrue(plan["tasks"][0]["scoreable"])
+        self.assertFalse(plan["tasks"][0]["release_ready"])
         self.assertNotIn("hidden_case_secret", json.dumps(plan))
 
-    def test_unavailable_role_is_aggregate_only_and_incomplete(self):
+    def test_unavailable_role_is_aggregate_only_and_collection_complete(self):
         baseline = self.complete_baseline()
         baseline["results"][0].update(status="unavailable", reason="private measured reason")
         baseline["readiness"] = self.tool.assess(baseline, ["hidden_case_secret"])
         root = self.make_root(baseline, {"cases": [{"case_id": "hidden_case_secret"}]})
         item = self.tool.build_plan(root)["tasks"][0]
-        self.assertEqual(item["collection_status"], "incomplete")
+        self.assertEqual(item["collection_status"], "complete")
         self.assertIn(baseline["results"][0]["implementation"], item["unavailable_roles"])
         rendered = json.dumps(item)
         self.assertNotIn("hidden_case_secret", rendered)
@@ -92,6 +110,66 @@ class BaselineInventoryTests(unittest.TestCase):
         for role in ("upstream_musa", "mudnn_fused", "torch_musa_sdpa"):
             self.assertIn(f"{role}=<path-to-{role}-ModelNew-module>", command)
         self.assertNotIn("torch_musa_eager=<", rendered)
+
+    def test_command_template_resolves_the_canonical_upstream_answer(self):
+        root = self.make_root()
+        task_path = next((root / "tasks").glob("*/task.json"))
+        task = json.loads(task_path.read_text(encoding="utf-8"))
+        task["set_entry"] = "kb_l3_43"
+        task_path.write_text(json.dumps(task), encoding="utf-8")
+        answer = root.parent / "KernelBench" / "level3_musa" / "problem_43" / "model_new.py"
+        answer.parent.mkdir(parents=True)
+        answer.write_text("class ModelNew: pass\n", encoding="utf-8")
+
+        item = self.tool.build_plan(root)["tasks"][0]
+        self.assertEqual(
+            item["resolved_public_implementations"]["upstream_musa"],
+            "KernelBench/level3_musa/problem_43/model_new.py",
+        )
+        self.assertIn(
+            "upstream_musa=KernelBench/level3_musa/problem_43/model_new.py",
+            item["command_template"],
+        )
+
+    def test_a_gap_blocked_b_contract_is_not_scheduled_for_hardware_collection(self):
+        root = self.make_root()
+        task_path = next((root / "tasks").glob("*/task.json"))
+        task = json.loads(task_path.read_text(encoding="utf-8"))
+        task["admission"] = {
+            "status": "blocked_gap_coverage",
+            "gap_reason_coverage": {"state": "blocked"},
+        }
+        task["lifecycle"] = {
+            "decision": "research_only",
+            "reason": "the current contract cannot satisfy the admission floor",
+        }
+        task_path.write_text(json.dumps(task), encoding="utf-8")
+
+        item = self.tool.build_plan(root)["tasks"][0]
+        self.assertEqual(item["collection_priority"], "inactive_current_contract")
+        self.assertEqual(item["collection_status"], "not_scheduled")
+        self.assertEqual(item["lifecycle_decision"], "research_only")
+        self.assertEqual(
+            item["collection_action"],
+            "retain_research_evidence_no_hardware_collection",
+        )
+        self.assertEqual(item["issue_codes"], ["inactive_current_contract"])
+
+    def test_a_research_only_a_contract_is_not_a_release_blocker(self):
+        root = self.make_root()
+        task_path = next((root / "tasks").glob("*/task.json"))
+        task = json.loads(task_path.read_text(encoding="utf-8"))
+        task["tier"] = "A_kernel"
+        task["lifecycle"] = {
+            "decision": "research_only",
+            "reason": "the semantic domain has a single-call equivalent library path",
+        }
+        task_path.write_text(json.dumps(task), encoding="utf-8")
+
+        item = self.tool.build_plan(root)["tasks"][0]
+        self.assertEqual(item["collection_priority"], "inactive_current_contract")
+        self.assertEqual(item["collection_status"], "not_scheduled")
+        self.assertEqual(item["collection_action"], "retain_research_evidence_no_hardware_collection")
 
 
 if __name__ == "__main__":

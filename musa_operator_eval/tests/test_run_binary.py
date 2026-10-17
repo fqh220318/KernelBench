@@ -205,6 +205,9 @@ class SourceAuditTests(unittest.TestCase):
             if not task_path.is_file():
                 continue
             task = json.loads(task_path.read_text(encoding="utf-8"))
+            if not (task.get("starter") or {}).get("cpp"):
+                self.assertEqual(task.get("normative_spec"), "1.0.0")
+                continue
             source = (directory / "starter" / "cpp" / "kernel.mu").read_text(encoding="utf-8")
             with self.subTest(task=task["id"]):
                 self.assertEqual(run_binary.audit_compiled_source(task, source), [])
@@ -348,28 +351,32 @@ if os.environ.get("KB_TRACE") and not os.environ.get("FAKE_NO_TRACE"):
 
 
 class ToleranceResolutionTests(unittest.TestCase):
-    """One bar per task, resolved from the contract the way the framework resolves it."""
+    """Each case resolves three independent limits from its named profile."""
 
-    def test_a_declared_max_abs_error_that_is_looser_becomes_the_bar(self):
-        task = {"tolerances": {"atol": 0.01, "rtol": 0.01, "max_abs_error": 0.05}}
-        resolved = run_binary.resolve_case_tolerance(task, "fp32")
-        self.assertEqual((resolved["atol"], resolved["rtol"]), (0.05, 0.05))
-        self.assertEqual(resolved["source"], "task_contract.tolerances.max_abs_error")
+    def profile(self, dtype="float16", **limits):
+        values = {"atol": 0.01, "rtol": 0.01, "max_abs_error": 0.05}
+        values.update(limits)
+        return {"tolerance_profiles": {"default": {dtype: values}}}
 
-    def test_a_declared_max_abs_error_may_not_tighten_the_frameworks_floor(self):
-        task = {"tolerances": {"max_abs_error": 1e-9}}
-        resolved = run_binary.resolve_case_tolerance(task, "fp16")
+    def case(self):
+        return {"case_id": "c1", "tolerance_profile": "default"}
+
+    def test_max_abs_error_does_not_replace_atol_or_rtol(self):
+        resolved = run_binary.resolve_case_tolerance(
+            self.profile("float32"), self.case(), "fp32"
+        )
+        self.assertEqual((resolved["atol"], resolved["rtol"]), (0.01, 0.01))
+        self.assertEqual(resolved["max_abs_error"], 0.05)
+
+    def test_atol_and_rtol_may_not_tighten_the_framework_floor(self):
+        task = self.profile(atol=1e-9, rtol=1e-9, max_abs_error=1e-9)
+        resolved = run_binary.resolve_case_tolerance(task, self.case(), "fp16")
         self.assertEqual((resolved["atol"], resolved["rtol"]), (1e-2, 1e-2))
+        self.assertEqual(resolved["max_abs_error"], 1e-9)
 
-    def test_without_a_declaration_the_frameworks_floor_is_the_bar(self):
-        resolved = run_binary.resolve_case_tolerance({}, "fp16")
-        self.assertEqual(resolved["atol"], 1e-2)
-        self.assertEqual(resolved["source"], "kernelbench.eval.get_tolerance_for_precision")
-        self.assertEqual(run_binary.resolve_case_tolerance({}, "fp32")["atol"], 1e-4)
-
-    def test_an_unknown_precision_falls_back_to_the_looser_floor(self):
-        """Guessing low would grade a submission against a bar nobody declared."""
-        self.assertEqual(run_binary.resolve_case_tolerance({}, "fp8")["atol"], 1e-2)
+    def test_a_missing_profile_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "tolerance profile"):
+            run_binary.resolve_case_tolerance({}, self.case(), "fp16")
 
     @unittest.skipUnless(shutil.which("python") and _torch_available(), "requires the framework's torch")
     def test_the_replica_matches_the_framework(self):
@@ -382,23 +389,26 @@ class ToleranceResolutionTests(unittest.TestCase):
                     run_binary.FRAMEWORK_TOLERANCES[precision],
                     framework.get_tolerance_for_precision(precision),
                 )
-        for declared in (0.05, 1e-9, None):
-            with self.subTest(declared=declared):
-                self.assertEqual(
-                    run_binary.resolve_case_tolerance({"tolerances": {"max_abs_error": declared}}, "fp16")["atol"],
-                    framework.resolve_tolerance("fp16", declared),
-                )
+        declared = {"atol": 0.05, "rtol": 1e-9, "max_abs_error": 0.07}
+        self.assertEqual(
+            run_binary.resolve_case_tolerance(
+                {"tolerance_profiles": {"default": {"float16": declared}}},
+                self.case(), "fp16",
+            )["atol"],
+            framework.resolve_tolerance_profile("fp16", declared)["atol"],
+        )
 
-    def test_the_report_names_the_bar_it_used(self):
-        task = {"tolerances": {"max_abs_error": 0.05}}
-        self.assertEqual(run_binary.resolve_case_tolerance(task, "fp16")["atol"], 0.05)
-        # The comparison itself is one place; a case can no longer declare another.
+    def test_both_allclose_and_the_absolute_ceiling_must_pass(self):
+        tolerance = run_binary.resolve_case_tolerance(
+            self.profile(max_abs_error=0.01), self.case(), "fp16"
+        )
         passed, _, errors = run_binary.compare_tensors(
             {"output": {"dtype": "float32", "shape": [1], "values": np.array([1.0], dtype=np.float32)}},
-            {"output": {"dtype": "float32", "shape": [1], "values": np.array([1.03], dtype=np.float32)}},
-            run_binary.resolve_case_tolerance(task, "fp16"),
+            {"output": {"dtype": "float32", "shape": [1], "values": np.array([1.015], dtype=np.float32)}},
+            tolerance,
         )
-        self.assertTrue(passed, errors)
+        self.assertFalse(passed)
+        self.assertTrue(any("independent ceiling" in error for error in errors), errors)
 
 
 class CompiledStageSchedulerTests(unittest.TestCase):
@@ -661,6 +671,20 @@ class LinkWhitelistIntegrationTests(unittest.TestCase):
 
 
 class PrecisionGuardTests(unittest.TestCase):
+    def test_a_timing_request_that_differs_from_the_contract_is_refused(self):
+        code, report = run_binary.evaluate_binary_task(
+            PILOT,
+            Path("missing-submission"),
+            PILOT / "public_cases.json",
+            Path("generated"),
+            Path("build"),
+            precision="fp16",
+            warmup=2,
+            repeat=100,
+        )
+        self.assertEqual(code, run_binary.exit_codes.EXIT_PERFORMANCE_PROTOCOL_MISMATCH)
+        self.assertIn("requested warmup 2", " ".join(report["summary"]["errors"]))
+
     """§4.4's precision guard, on the compiled path.
 
     A run at a precision the task was not measured at reports a different task's
@@ -772,7 +796,9 @@ class TimingTests(unittest.TestCase):
         self.assertEqual(row["runtime"], 5.33, "the mean of 10, 4 and 2")
         self.assertEqual(row["timing"], {
             "warmup": 0, "repeat": 3, "discarded": 1, "timer": "musa_event", "cache": "cold",
-            "l2_thrash_bytes": 268435456, "mean_ms": 5.33, "min_ms": 2.0, "samples": [10.0, 4.0, 2.0],
+            "l2_thrash_bytes": 268435456, "mean_ms": 5.33, "min_ms": 2.0,
+            "max_ms": 10.0, "std_ms": 3.399346, "p10_ms": 2.4,
+            "p50_ms": 4.0, "p90_ms": 8.8, "samples": [10.0, 4.0, 2.0],
         })
         self.assertGreater(row["wall_ms"], 0.0)
         # The number the row grades on is the mean of the samples it carries.
