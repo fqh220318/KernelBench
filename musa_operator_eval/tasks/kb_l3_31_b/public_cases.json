@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "task_id": "vision_attention_b_v0",
   "tier": "B_library",
   "visibility": "public",
@@ -23,7 +23,10 @@
         "W": 32
       },
       "expected_path": "fused_library",
-      "golden": "smoke_001/golden/tensors.json"
+      "golden": "smoke_001/golden/tensors.json",
+      "attributes": {},
+      "distribution": "uniform",
+      "tolerance_profile": "default"
     },
     {
       "case_id": "smoke_002",
@@ -38,7 +41,10 @@
         "W": 64
       },
       "expected_path": "fused_library",
-      "golden": "smoke_002/golden/tensors.json"
+      "golden": "smoke_002/golden/tensors.json",
+      "attributes": {},
+      "distribution": "uniform",
+      "tolerance_profile": "default"
     },
     {
       "case_id": "smoke_003",
@@ -53,7 +59,10 @@
         "W": 65
       },
       "expected_path": "fused_library",
-      "golden": "smoke_003/golden/tensors.json"
+      "golden": "smoke_003/golden/tensors.json",
+      "attributes": {},
+      "distribution": "uniform",
+      "tolerance_profile": "default"
     }
   ]
 }
