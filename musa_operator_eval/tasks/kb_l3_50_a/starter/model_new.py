@@ -4,16 +4,16 @@
 冻结的,清单见 `task.json` 的 `starter.frozen`;改冻结点会被静态审计按越界修改拒绝,
 这份副本里的其他内容可以自由改写。
 
-接口:`ModelNew(n_embd, n_head, max_seqlen)`,`forward(x)` → 一个与 reference 输出同形状的张量。
+接口:`ModelNew(n_embd, n_head, max_seqlen)`,`forward(x)` → 一个与公开合同输出同形状的张量。
 输入:x 一个 (B, S, C) 张量。
 
     # 生成公开 smoke 用例的输入与 golden(不提交,按需生成)
-    python musa_operator_eval/tools/generate_cases.py --task-dir musa_operator_eval/tasks/kb_l3_50_a
+    python musa_operator_eval/tools/generate_cases.py --task-dir .
     # 不需要设备的自测:静态审计 + case 覆盖检查 + golden 交叉核对
-    python musa_operator_eval/evaluator/run_task.py --task-dir musa_operator_eval/tasks/kb_l3_50_a \
+    python musa_operator_eval/evaluator/run_task.py --task-dir . \
         --submission model_new.py --static-only
     # 完整评测:静态审计 → 编译 → 链接白名单核对 → 正确性 → 性能
-    python musa_operator_eval/evaluator/run_task.py --task-dir musa_operator_eval/tasks/kb_l3_50_a \
+    python musa_operator_eval/evaluator/run_task.py --task-dir . \
         --submission model_new.py --backend musa --precision fp32
 
 输入与输出只在两个目录之间以裸二进制张量加 JSON manifest 传递,格式见
@@ -38,7 +38,7 @@ class ModelNew(nn.Module):
     def forward(self, x):
         # --- BEGIN device_kernel ---
         # 核心计算全部写在 Device kernel 里:kernel 源码(可以用
-        # kernelbench.musa_extension.load_inline JIT 编译 .mu 源码)以及必要的
+        # 评测环境提供的 musa_extension.load_inline JIT 编译 .mu 源码)以及必要的
         # 中间张量。库算子、ATen、SDPA 都不能用来完成这一段。
         # --- END device_kernel ---
 
