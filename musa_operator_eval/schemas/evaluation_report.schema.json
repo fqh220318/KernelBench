@@ -53,6 +53,42 @@
             "null"
           ]
         },
+        "correctness_reference": {
+          "description": "What supplied the expected correctness output for this case. Normative full runs use the generated independent golden.",
+          "enum": [
+            "independent_golden",
+            "problem_model",
+            null
+          ]
+        },
+        "golden_output_names": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "tolerance_used": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["atol", "rtol", "max_abs_error", "framework_floor"],
+          "properties": {
+            "profile": {"type": "string"},
+            "atol": {"type": "number", "minimum": 0},
+            "rtol": {"type": "number", "minimum": 0},
+            "max_abs_error": {"type": "number", "minimum": 0},
+            "framework_floor": {"type": "number", "minimum": 0},
+            "source": {"type": "string"}
+          }
+        },
+        "runtime_stats": {
+          "type": ["object", "null"]
+        },
+        "ref_runtime_stats": {
+          "type": ["object", "null"]
+        },
         "dispatch_trace_passed": {
           "type": [
             "boolean",
@@ -239,6 +275,11 @@
             "l2_thrash_bytes",
             "mean_ms",
             "min_ms",
+            "max_ms",
+            "std_ms",
+            "p10_ms",
+            "p50_ms",
+            "p90_ms",
             "samples"
           ],
           "properties": {
@@ -255,6 +296,11 @@
             "min_ms": {
               "type": "number"
             },
+            "max_ms": {"type": "number"},
+            "std_ms": {"type": "number", "minimum": 0},
+            "p10_ms": {"type": "number"},
+            "p50_ms": {"type": "number"},
+            "p90_ms": {"type": "number"},
             "discarded": {
               "type": "integer",
               "minimum": 0,
@@ -402,6 +448,27 @@
         "fp16",
         "bf16"
       ]
+    },
+    "performance_protocol": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": [
+        "timer", "warmup", "measurements", "discard_first", "cache",
+        "statistic", "diagnostics"
+      ],
+      "properties": {
+        "timer": {"const": "device_event"},
+        "warmup": {"const": 3},
+        "measurements": {"const": 100},
+        "discard_first": {"const": 1},
+        "cache": {"const": "l2_flush_each_trial"},
+        "statistic": {"const": "mean"},
+        "diagnostics": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"enum": ["samples", "p10", "p50", "p90", "std", "min", "max"]}
+        }
+      }
     },
     "submission": {
       "type": "string",

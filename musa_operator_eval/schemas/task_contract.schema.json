@@ -39,6 +39,26 @@
           "minLength": 3
         }
       }
+    },
+    "tolerance_triplet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["atol", "rtol", "max_abs_error"],
+      "properties": {
+        "atol": {"type": "number", "minimum": 0},
+        "rtol": {"type": "number", "minimum": 0},
+        "max_abs_error": {"type": "number", "minimum": 0}
+      }
+    },
+    "tolerance_profile": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "float16": {"$ref": "#/$defs/tolerance_triplet"},
+        "bfloat16": {"$ref": "#/$defs/tolerance_triplet"},
+        "float32": {"$ref": "#/$defs/tolerance_triplet"}
+      }
     }
   },
   "type": "object",
@@ -49,17 +69,18 @@
     "id",
     "name",
     "family",
-    "source",
     "target_environment",
     "problem_file",
     "reference",
     "case_parameters",
-    "tolerances",
+    "tolerance_profiles",
+    "performance_protocol",
     "tensor_contract",
     "prohibited",
     "submission",
     "attempt_budget",
     "outputs",
+    "scoring",
     "starter"
   ],
   "properties": {
@@ -84,6 +105,65 @@
     "family": {
       "type": "string",
       "minLength": 2
+    },
+    "normative_spec": {
+      "const": "1.0.0",
+      "description": "Present only after migration to the Phase 21 executable specification."
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "release_status",
+        "reference_origin"
+      ],
+      "properties": {
+        "release_status": {
+          "enum": [
+            "migration_required",
+            "hardware_pending",
+            "release_ready"
+          ]
+        },
+        "reference_origin": {
+          "enum": [
+            "legacy_upstream_copy",
+            "independent_cpu_reference"
+          ]
+        },
+        "note": {
+          "type": "string",
+          "minLength": 10
+        }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision",
+        "reason"
+      ],
+      "properties": {
+        "decision": {
+          "enum": [
+            "keep",
+            "redesign_new_id",
+            "retire",
+            "research_only"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 20
+        },
+        "successor_policy": {
+          "enum": [
+            "not_applicable",
+            "new_task_id_required"
+          ]
+        }
+      }
     },
     "scope": {
       "enum": [
@@ -157,6 +237,11 @@
         }
       }
     },
+    "source_id": {
+      "type": "string",
+      "pattern": "^src_[0-9a-f]{16}$",
+      "description": "Opaque public identifier. It cannot contain a repository, path, revision or licence."
+    },
     "target_environment": {
       "type": "object",
       "additionalProperties": false,
@@ -199,7 +284,8 @@
       "required": [
         "path",
         "entrypoint",
-        "returns"
+        "returns",
+        "state_handling"
       ],
       "properties": {
         "path": {
@@ -219,6 +305,26 @@
             "pattern": "^[a-z0-9][a-z0-9_]*$"
           }
         },
+        "state_handling": {
+          "description": "How the independent oracle obtains model parameters and buffers. Stateful normative tasks either receive the framework-materialized state directly or replay the public constructor from deterministic context; stateless tasks declare that no model state exists.",
+          "enum": [
+            "stateless",
+            "explicit_model_state",
+            "deterministic_constructor_replay"
+          ]
+        },
+        "context": {
+          "description": "Optional deterministic construction context passed to the oracle as keyword arguments. This is for references whose output depends on seeded model state without making that state part of the submission input ABI.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "case_seed",
+              "init_inputs",
+              "model_state"
+            ]
+          }
+        },
         "note": {
           "type": "string"
         }
@@ -236,29 +342,37 @@
         "$ref": "#/$defs/identifier"
       }
     },
-    "tolerances": {
+    "tolerance_profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_]*$"},
+      "additionalProperties": {"$ref": "#/$defs/tolerance_profile"},
+      "description": "Named per-dtype profiles. atol and rtol are independently floored by the framework; max_abs_error is an independent hard ceiling."
+    },
+    "performance_protocol": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "atol",
-        "rtol",
-        "max_abs_error"
+        "timer", "warmup", "measurements", "discard_first", "cache",
+        "statistic", "diagnostics"
       ],
       "properties": {
-        "atol": {
-          "type": "number",
-          "minimum": 0
-        },
-        "rtol": {
-          "type": "number",
-          "minimum": 0
-        },
-        "max_abs_error": {
-          "type": "number",
-          "minimum": 0
+        "timer": {"const": "device_event"},
+        "warmup": {"const": 3},
+        "measurements": {"const": 100},
+        "discard_first": {"const": 1},
+        "cache": {"const": "l2_flush_each_trial"},
+        "statistic": {"const": "mean"},
+        "diagnostics": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 7,
+          "items": {
+            "enum": ["samples", "p10", "p50", "p90", "std", "min", "max"]
+          }
         }
       },
-      "description": "The tolerance the case is graded at, when the task needs more room than the framework provides for its dtypes. `kernelbench.eval.resolve_tolerance` takes the larger of the framework's per-dtype value and `max_abs_error` here, so this block can loosen grading but never tighten it; `atol` and `rtol` are checked against the same floor by tools/validate_schemas.py. A task needs this lever when its own reference is the numerically unstable side, for instance a bfloat16 reference whose outputs sit at a magnitude where one step is larger than the framework's default."
+      "description": "The single formal timing protocol shared by submissions and denominators."
     },
     "tensor_contract": {
       "description": "Guide §4.1. The precision a task is graded at is part of the contract, not a CLI default.",
@@ -429,7 +543,8 @@
       "additionalProperties": false,
       "required": [
         "speedup",
-        "ranking"
+        "ranking",
+        "denominator_policy"
       ],
       "properties": {
         "speedup": {
@@ -442,6 +557,20 @@
         },
         "gate": {
           "type": "string"
+        },
+        "denominator_policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "primary", "fallback", "fallback_condition", "selection_scope", "selection_record"
+          ],
+          "properties": {
+            "primary": {"type": "string", "minLength": 3},
+            "fallback": {"type": "string", "minLength": 3},
+            "fallback_condition": {"type": "string", "minLength": 10},
+            "selection_scope": {"const": "per_scoring_case"},
+            "selection_record": {"const": "private_baseline.denominator_by_case"}
+          }
         }
       }
     },
@@ -615,6 +744,12 @@
           "items": {
             "$ref": "#/$defs/gap_reason"
           }
+        },
+        "formal_call_surface": {
+          "description": "Normative B-tier packages call the library through this public framework surface; direct backend-library calls are research-only.",
+          "enum": [
+            "torch_musa"
+          ]
         },
         "dispatch_file_note": {
           "type": "string"
@@ -911,35 +1046,23 @@
             }
           }
         }
-      },
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "abi": {
-                "properties": {
-                  "runner_imports_libtorch": {
-                    "const": true
-                  }
-                }
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "abi": {
-                "required": [
-                  "deviation"
-                ]
-              }
-            },
-            "description": "A runner that imports libtorch deviates from §4.6, which is allowed here and has to be stated where a reader comparing the ABI against the guide will find it."
-          }
-        }
-      ]
+      }
     }
   },
   "allOf": [
+    {
+      "oneOf": [
+        {
+          "required": ["source"],
+          "not": {"required": ["source_id"]}
+        },
+        {
+          "required": ["source_id"],
+          "not": {"required": ["source"]}
+        }
+      ],
+      "description": "Legacy development contracts carry source; migrated public contracts carry only source_id."
+    },
     {
       "if": {
         "required": [
@@ -996,6 +1119,7 @@
         }
       },
       "then": {
+        "required": ["lifecycle"],
         "properties": {
           "admission": {
             "properties": {"status": {"const": "measured"}}
@@ -1031,6 +1155,13 @@
               }
             }
           },
+          "lifecycle": {
+            "properties": {
+              "decision": {
+                "enum": ["redesign_new_id", "retire", "research_only"]
+              }
+            }
+          },
           "library_policy": {
             "properties": {"required_gap_reasons": {"maxItems": 1}}
           }
@@ -1057,28 +1188,6 @@
           }
         }
       }
-    },
-    {
-      "if": {
-        "properties": {
-          "tier": {
-            "const": "B_library"
-          }
-        }
-      },
-      "then": {
-        "required": [
-          "starter"
-        ],
-        "properties": {
-          "starter": {
-            "required": [
-              "link_whitelist"
-            ]
-          }
-        }
-      },
-      "description": "§4.6 gives the link whitelist to the B tier, and a B-tier build has to say what it may link."
     },
     {
       "if": {
@@ -1143,22 +1252,50 @@
     },
     {
       "if": {
+        "required": ["publication"],
         "properties": {
-          "tier": {
-            "const": "B_library"
+          "publication": {
+            "required": ["release_status"],
+            "properties": {
+              "release_status": {
+                "enum": ["hardware_pending", "release_ready"]
+              }
+            }
           }
         }
       },
       "then": {
+        "required": ["normative_spec", "source_id", "lifecycle", "golden_oracle"],
+        "not": {"required": ["source"]},
         "properties": {
+          "publication": {
+            "properties": {"reference_origin": {"const": "independent_cpu_reference"}}
+          },
+          "submission": {
+            "required": ["language"],
+            "properties": {"language": {"const": "python"}}
+          },
+          "library_policy": {
+            "required": ["formal_call_surface"],
+            "properties": {"formal_call_surface": {"const": "torch_musa"}}
+          },
+          "lifecycle": {
+            "properties": {
+              "decision": {"const": "keep"},
+              "successor_policy": {"const": "not_applicable"}
+            }
+          },
           "starter": {
-            "required": [
-              "cpp"
-            ]
+            "not": {
+              "anyOf": [
+                {"required": ["cpp"]},
+                {"required": ["link_whitelist"]}
+              ]
+            }
           }
-        },
-        "description": "§4.6's link whitelist only means something for a build product; a B-tier package that declares one also ships the compiled path it applies to."
-      }
+        }
+      },
+      "description": "A statically migrated normative package has an opaque source id, a declared independent golden oracle, a torch_musa call surface for B, and no formal compiled path. hardware_pending is not releasable until hardware evidence promotes it to release_ready."
     }
   ]
 }

@@ -35,7 +35,10 @@
         "tag",
         "seed",
         "dtype",
-        "shape"
+        "shape",
+        "attributes",
+        "distribution",
+        "tolerance_profile"
       ],
       "properties": {
         "case_id": {
@@ -75,6 +78,20 @@
             "uniform",
             "adversarial_extremes"
           ]
+        },
+        "tolerance_profile": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "tolerance_override": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "atol": {"type": "number", "minimum": 0},
+            "rtol": {"type": "number", "minimum": 0},
+            "max_abs_error": {"type": "number", "minimum": 0}
+          }
         },
         "golden": {
           "type": "string",
