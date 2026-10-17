@@ -7,17 +7,17 @@
 
 ## 交付物
 
-一个 Python 模块，定义 `ModelNew`，构造参数与输入与 reference `Model` 一致。兜底 kernel 可用 `kernelbench.musa_extension.load_inline` JIT 编译 `.mu` 源码。
+一个 Python 模块，定义 `ModelNew`，构造参数与输入与公开执行接口一致。Device kernel 可用评测环境提供的中性 `musa_extension.load_inline` JIT 编译 `.mu` 源码。
 
 ## 必须做
 
-- 把 QKV 投影、QK^T+ReLU 遮挡、P·V 三段都放进 Device kernel。
+- 把 QK^T、top-left 因果遮挡、ReLU、P·V 放进 Device kernel。
 - ReLU 必须作用在遮挡之后的分数上，顺序不能与遮挡互换。
-- 注意 reference 不应用输出投影，提交也不得自行加上。
+- QKV 投影可以保留为 `nn.Linear`；合同不包含输出投影，提交不得自行加上。
 
 ## 禁止做
 
-- 调用 muDNN / muBLAS / SDPA / ATen 完成任何一段核心计算。
+- 调用 muDNN / muBLAS / SDPA / ATen 完成合同声明的 attention 核心计算。
 - 把数据拷回 Host 计算。
 - 自作主张补一个 Softmax 归一化或输出投影。
 

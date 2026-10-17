@@ -1,9 +1,8 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "task_id": "relu_causal_attention_a_v0",
   "tier": "A_kernel",
   "visibility": "public",
-  "set_entry": "kb_l3_50",
   "case_generation": {
     "tool": "musa_operator_eval/tools/generate_cases.py",
     "deterministic": true,
@@ -21,7 +20,10 @@
         "C": 128,
         "H": 4
       },
-      "golden": "smoke_001/golden/tensors.json"
+      "attributes": {},
+      "distribution": "uniform",
+      "golden": "smoke_001/golden/tensors.json",
+      "tolerance_profile": "default"
     },
     {
       "case_id": "smoke_002",
@@ -34,7 +36,10 @@
         "C": 256,
         "H": 8
       },
-      "golden": "smoke_002/golden/tensors.json"
+      "attributes": {},
+      "distribution": "uniform",
+      "golden": "smoke_002/golden/tensors.json",
+      "tolerance_profile": "default"
     },
     {
       "case_id": "smoke_003",
@@ -47,7 +52,10 @@
         "C": 192,
         "H": 6
       },
-      "golden": "smoke_003/golden/tensors.json"
+      "attributes": {},
+      "distribution": "uniform",
+      "golden": "smoke_003/golden/tensors.json",
+      "tolerance_profile": "default"
     }
   ]
 }
