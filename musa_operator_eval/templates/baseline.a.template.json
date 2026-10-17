@@ -1,20 +1,21 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "task_id": "replace_with_task_id",
   "tier": "A_kernel",
   "environment_snapshot": "replace-with-snapshot-id",
+  "task_release_status": "hardware_pending",
   "measurement_protocol": {
-    "timer": "cuda_event",
+    "timer": "kernelbench_device_event",
     "warmup": 3,
     "measurements": 100,
     "discard_first": 1,
     "statistic": "mean",
-    "cache": "cold",
+    "cache": "l2_flush_each_trial",
     "rounds": 1,
     "source": "kernelbench.timing.time_execution_with_cuda_event"
   },
   "weight_alignment": "re-seed and rebuild, as kernelbench.eval does; no state dict is copied",
-  "tolerance_source": "kernelbench.eval.resolve_tolerance",
+  "tolerance_source": "case.tolerance_profile -> task.tolerance_profiles -> kernelbench.eval.resolve_tolerance_profile",
   "implementations": [
     "upstream_musa",
     "mudnn_fused",
@@ -23,7 +24,9 @@
   ],
   "results": [],
   "readiness": {
-    "status": "incomplete",
+    "evidence_complete": false,
+    "scoreable": false,
+    "release_ready": false,
     "required_roles": [
       "upstream_musa",
       "mudnn_fused",
@@ -36,13 +39,19 @@
     "duplicate_rows": [],
     "unavailable_rows": [],
     "nonpassing_rows": [],
-    "problems": [
+    "evidence_problems": [
       "the baseline contains no measured case"
+    ],
+    "scoreability_problems": [],
+    "release_blockers": [
+      "baseline is not scoreable",
+      "task release status is 'hardware_pending', not 'release_ready'"
     ]
   },
   "scoring": {
     "speedup_denominator": "upstream_musa",
     "reference_implementation": "torch_musa_eager",
-    "correctness_gate": "all_hidden_cases"
+    "correctness_gate": "all_hidden_cases",
+    "denominator_by_case": {}
   }
 }

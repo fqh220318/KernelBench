@@ -11,6 +11,7 @@
       "shape": {"B": 1, "H_q": 4, "H_kv": 4, "S_q": 127, "S_kv": 127, "D": 64},
       "attributes": {"scale": 0.125, "causal": false, "window_left": -1, "window_right": -1},
       "distribution": "normal",
+      "tolerance_profile": "default",
       "expected_path": "library_composition",
       "library_gap": {
         "reason": "unsupported_shape",
@@ -27,6 +28,7 @@
       "shape": {"B": 1, "H_q": 4, "H_kv": 4, "S_q": 129, "S_kv": 129, "D": 96},
       "attributes": {"scale": 0.10206207261596575, "causal": false, "window_left": -1, "window_right": -1},
       "distribution": "normal",
+      "tolerance_profile": "default",
       "expected_path": "library_composition",
       "library_gap": {
         "reason": "unsupported_shape",
@@ -43,6 +45,7 @@
       "shape": {"B": 2, "H_q": 8, "H_kv": 2, "S_q": 257, "S_kv": 513, "D": 64},
       "attributes": {"scale": 0.125, "causal": true, "window_left": -1, "window_right": -1},
       "distribution": "normal",
+      "tolerance_profile": "default",
       "expected_path": "custom_fallback",
       "library_gap": {
         "reason": "semantic_mismatch",
@@ -59,6 +62,7 @@
       "shape": {"B": 4, "H_q": 16, "H_kv": 16, "S_q": 512, "S_kv": 512, "D": 64},
       "attributes": {"scale": 0.125, "causal": false, "window_left": -1, "window_right": -1},
       "distribution": "normal",
+      "tolerance_profile": "default",
       "expected_path": "fused_library"
     }
   ],
@@ -77,7 +81,8 @@
     },
     "template": {
       "attributes": {"scale": 0.125, "causal": false, "window_left": -1, "window_right": -1},
-      "distribution": "normal"
+      "distribution": "normal",
+      "tolerance_profile": "default"
     },
     "expected_path_rules": [
       {"when": {"D": {"maximum": 128}}, "path": "fused_library"},
