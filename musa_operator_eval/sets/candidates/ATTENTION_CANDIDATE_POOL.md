@@ -85,8 +85,9 @@
 - A 类：不适合。标准 varlen forward 已有 FlashAttention 风格一次调用，普通版本属于 B 类库集成。
 - B 类：有希望。cu_seqlens、GQA 和非等长 causal 存在明确能力边界，可由融合路径、组合路径和兜底路径分派。
 - B 类待测 gap 假设：`unsupported_shape`、`semantic_mismatch`、`layout_mismatch`；它们尚不是实测证据。
+- 本地锚点：`musa_operator_eval/research/attention_p0/cpu_reference.py` (NumPy float64 CPU reference)；`musa_operator_eval/research/attention_p0/semantic_contracts.json` (pre-task semantic contract)；`musa_operator_eval/research/attention_p0/capability_probe_matrix.json` (not-run hardware probe matrix)。
 - 风险：不同 API 的 causal 对齐约定可能不同；空序列和 packed stride 可能触发未定义行为。
-- 下一证据：建立 top-left/bottom-right 两套对照探针并只保留一种任务语义；扫描空段、odd head_dim 和极端长度分布。
+- 下一证据：在目标机执行 bottom-right 合同与 top-left 负对照矩阵；记录空段、odd head_dim、极端长度和 stride 的 dispatch trace。
 
 #### `attention_varlen_backward` — Varlen FlashAttention Backward
 
@@ -109,8 +110,9 @@
 - A 类：有希望。per-sequence causal 是单一标量 causal 库入口不能表达的复合语义，可设计为独立统一 kernel。
 - B 类：有希望。vLLM-MUSA 已显式拒绝把 flag tensor 传给 MATE FA3 标量参数，并选择另一 backend，形成可验证的真实分派边界线索。
 - B 类待测 gap 假设：`semantic_mismatch`、`multi_operator_required`、`unsupported_shape`；它们尚不是实测证据。
+- 本地锚点：`musa_operator_eval/research/attention_p0/cpu_reference.py` (NumPy float64 CPU reference)；`musa_operator_eval/research/attention_p0/semantic_contracts.json` (pre-task semantic contract)；`musa_operator_eval/research/attention_p0/capability_probe_matrix.json` (not-run hardware probe matrix)。
 - 风险：容易与普通 causal bool 任务混淆；替代 backend 的 MUSA 可用性仍需设备验证。
-- 下一证据：记录 scalar causal 与 tensor causal 的真实 dispatch trace；设计混合 causal batch 的独立 golden。
+- 下一证据：在目标机记录 scalar 与逐序列 tensor causal 的真实 dispatch trace；用已冻结的混合 causal CPU reference 生成设备对照记录。
 
 ### Paged KV、追加写入与 Decode Attention (`attention_kv_cache`)
 
@@ -125,8 +127,9 @@
 - A 类：不适合。标准 paged decode 已有 MATE/FlashMLA 风格融合入口，普通版本应按 B 类评测分派能力。
 - B 类：有希望。page size、block table、GQA 比例和 cache layout 提供明确的融合路径边界与兜底需求。
 - B 类待测 gap 假设：`unsupported_shape`、`layout_mismatch`、`semantic_mismatch`；它们尚不是实测证据。
+- 本地锚点：`musa_operator_eval/research/attention_p0/cpu_reference.py` (NumPy float64 CPU reference)；`musa_operator_eval/research/attention_p0/semantic_contracts.json` (pre-task semantic contract)；`musa_operator_eval/research/attention_p0/capability_probe_matrix.json` (not-run hardware probe matrix)。
 - 风险：不同实现的 page size 和 cache layout 不同；decode 小 query 的计时易受 launch 噪声影响。
-- 下一证据：建立 page table 越界与重复 page 的语义约束；扫描 page size、KV 长度和 GQA 比例并记录分派。
+- 下一证据：在目标机执行 page table 越界、重复 page 和边界长度矩阵；扫描 page size、KV 长度和 GQA 比例并记录 dispatch trace。
 
 #### `kv_cache_append_rope_attention` — KV-cache Append + RoPE + Attention
 
@@ -287,6 +290,6 @@
 2. 为 family 单独编写语义契约和 CPU reference，不能复用 Attention 专属字段。
 3. 按 A/B 三问重新判级；B 类必须实测至少 3 条 gap、至少 2 类原因和 naive/expert >= 1.3。
 4. 生成公开 smoke、隐藏正确性/边界/极值/性能 Case 与运行时泛化探针。
-5. 在同一 MUSA 环境采齐 A 的 4 个基线角色或 B 的 6 个基线角色，readiness 为 complete 后才可发布或排名。
+5. 在同一 MUSA 环境采齐 A 的 4 个基线角色或 B 的 6 个基线角色；只有 evidence_complete、scoreable 与 release_ready 全部为 true 才可发布或排名。
 
 发布规则：This maintainer-only Attention pool may reference project names, exact revisions and implementation paths. It must not be copied into an agent-visible task. Promotion requires an independent semantic contract and CPU reference, public/private/generalization cases, measured MUSA capability gaps, complete tier-specific baselines and the existing admission gates.

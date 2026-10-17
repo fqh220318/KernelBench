@@ -336,6 +336,6 @@
 2. 为 family 单独编写语义契约和 CPU reference，不能复用 Attention 专属字段。
 3. 按 A/B 三问重新判级；B 类必须实测至少 3 条 gap、至少 2 类原因和 naive/expert >= 1.3。
 4. 生成公开 smoke、隐藏正确性/边界/极值/性能 Case 与运行时泛化探针。
-5. 在同一 MUSA 环境采齐 A 的 4 个基线角色或 B 的 6 个基线角色，readiness 为 complete 后才可发布或排名。
+5. 在同一 MUSA 环境采齐 A 的 4 个基线角色或 B 的 6 个基线角色；只有 evidence_complete、scoreable 与 release_ready 全部为 true 才可发布或排名。
 
 发布规则：This maintainer-only pool contains upstream project names, revisions and implementation locations. It must never be copied into an agent-visible task package. Promotion requires a source snapshot, independent semantic/reference review, public/private case design and real MUSA baseline evidence.
