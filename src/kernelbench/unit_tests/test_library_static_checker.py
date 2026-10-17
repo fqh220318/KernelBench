@@ -42,6 +42,8 @@ POLICY = {
     "case_id_env_var": "KB_DISPATCH_CASE_ID",
 }
 
+NORMATIVE_POLICY = dict(POLICY, formal_call_surface="torch_musa")
+
 # A submission that probes at runtime, dispatches to a whitelisted library, and
 # appends the trace where the evaluator told it to. This is what the B tier asks
 # for; anything less cannot be graded.
@@ -124,6 +126,30 @@ class ABInversionTests(unittest.TestCase):
             code, backend="", precision="fp16", forbidden=["torch_computation_ops"]
         )
         self.assertTrue(any("softmax" in message for message in errors), errors)
+
+
+class FormalCallSurfaceTests(unittest.TestCase):
+    def test_torch_musa_surface_accepts_a_framework_only_submission(self):
+        code = GOOD_SUBMISSION.replace("import mudnn\n", "").replace(
+            "probe = mudnn.sdpa_supported(q.dtype, q.shape[-1])",
+            "probe = torch_musa.sdpa_supported(q.dtype, q.shape[-1])",
+        )
+        valid, errors, _ = validate_library_kernel_static(code, NORMATIVE_POLICY)
+        self.assertTrue(valid, errors)
+
+    def test_torch_musa_surface_rejects_a_direct_backend_import(self):
+        valid, errors, _ = validate_library_kernel_static(GOOD_SUBMISSION, NORMATIVE_POLICY)
+        self.assertFalse(valid)
+        self.assertTrue(any("bypasses torch_musa" in error for error in errors), errors)
+
+    def test_torch_musa_surface_requires_the_framework_import(self):
+        code = GOOD_SUBMISSION.replace("import torch_musa\n", "").replace("import mudnn\n", "")
+        code = code.replace(
+            "probe = mudnn.sdpa_supported(q.dtype, q.shape[-1])", "probe = False"
+        ).replace("return torch_musa.sdpa(q, k, v)", "return q")
+        valid, errors, _ = validate_library_kernel_static(code, NORMATIVE_POLICY)
+        self.assertFalse(valid)
+        self.assertTrue(any("must import torch_musa" in error for error in errors), errors)
 
 
 class ExceptionProbeTests(unittest.TestCase):
